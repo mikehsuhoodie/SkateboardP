@@ -3,6 +3,33 @@ import numpy as np
 import sys, json
 import math
 
+def odd_at_least(n, lo=3, hi=21):
+    n = int(n) // 2 * 2 + 1  # 轉成奇數
+    return max(lo, min(n, hi))
+
+def auto_params(h, w):
+    diag = (h**2 + w**2) ** 0.5         # 影像對角線
+    perim_ref = (h + w)                 # 尺度參考（你原本就用）
+
+    params = {
+        # ── 前處理 ───────────────────────────────────────
+        "blur_ksize": odd_at_least(diag / 400),   # 小圖 3、大圖 7~11 左右
+        "canny_sigma": 0.33,                      # 可依雜訊調 0.25~0.6
+
+        # ── 輪廓過濾（已是比例制，保留） ─────────────────
+        "min_area": 0.0003 * (h * w),             # 佔全圖 0.03%
+        "min_peri": 0.01 * perim_ref,             # 佔 (h+w) 的 1%
+
+        # ── 折線化與平滑 ────────────────────────────────
+        "approx_epsilon_frac": 0.007,             # 仍用周長比例，與尺寸無關
+        "chaikin_iters": 2,
+
+        # ── 片段過濾（用對角線比例）──────────────────────
+        "min_seg_len": 0.02 * diag,               # 約對角線的 2%（小圖≈10px，大圖自動放大）
+        "max_slope_deg": 60.0,                    # 角度與尺寸無關
+    }
+    return params
+
 
 def chaikin_smooth(points, iterations=2, keep_ends=True):
     smoothed = np.array(points, dtype=float)
@@ -86,7 +113,7 @@ def filter_polylines_by_segment_rules(polylines,
 
 # --- 主程式流程 ---
 if len(sys.argv) < 2:
-    print("用法: python main.py <輸入圖片路徑> [預覽輸出圖片] [地圖輸出JSON]")
+    print("用法: python level_gen.py <輸入圖片路徑> [預覽輸出圖片] [地圖輸出JSON]")
     sys.exit(1)
 
 input_path = sys.argv[1]
@@ -99,14 +126,19 @@ if img is None:
     print(f"讀取圖片失敗: {input_path}")
     sys.exit(1)
 
+
 # 2. 灰階與去噪/對比
 gray = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
 # 提升對比，讓邊緣更完整（可視需要開關）
 gray = cv2.equalizeHist(gray)
-gray = cv2.GaussianBlur(gray, (5,5), 0)
 
-# 3. 邊緣（自動 Canny）+ 形態學閉運算把斷裂邊補起來
-edges = auto_canny(gray, sigma=0.8)
+h, w = gray.shape[:2]
+P = auto_params(h, w)
+
+gray = cv2.GaussianBlur(gray, (P["blur_ksize"], P["blur_ksize"]), 0)
+
+# 3. 邊緣（自動 Canny
+edges = auto_canny(gray, sigma=P["canny_sigma"])
 #kernel = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (3,3))
 #edges_closed = cv2.morphologyEx(edges, cv2.MORPH_CLOSE, kernel, iterations=1)
 
@@ -118,7 +150,8 @@ if len(contours) == 0:
     sys.exit(1)
 
 # 5. 過濾掉太小的雜點（依圖像大小調整門檻）
-h, w = gray.shape[:2]
+
+
 min_area = 0.0003 * (h * w)      # 面積小於全圖 
 min_peri = 0.01  * (h + w)       # 周長小於圖寬高和的 1% 略過
 
@@ -126,7 +159,7 @@ kept_contours = []
 for c in contours:
     area = cv2.contourArea(c)
     peri = cv2.arcLength(c, True)
-    if area >= min_area and peri >= min_peri:
+    if area >= P["min_area"] and peri >= P["min_peri"]:
         kept_contours.append(c)
 
 if len(kept_contours) == 0:
@@ -143,7 +176,7 @@ for c in kept_contours:
     is_closed = True
 
     peri = cv2.arcLength(c, is_closed)
-    epsilon = 0.01 * peri  # 0.005~0.02 越大越簡略
+    epsilon =P["approx_epsilon_frac"] * peri  # 0.005~0.02 越大越簡略
     approx = cv2.approxPolyDP(c, epsilon, is_closed)  # True=視為封閉輪廓
     pts = approx.reshape(-1, 2)
 
@@ -153,13 +186,13 @@ for c in kept_contours:
     
     # Chaikin 平滑
     if len(pts) >= 2:
-        smoothed = chaikin_smooth(pts, iterations=2, keep_ends=not is_closed)
+        smoothed = chaikin_smooth(pts, iterations=P["chaikin_iters"], keep_ends=not is_closed)
         polylines.append(smoothed.tolist())
         
 polylines = filter_polylines_by_segment_rules(
     polylines,
-    min_seg_len=17.0,      # 調大就刪更多短段
-    max_slope_deg=60.0,   # 調小就更嚴格限制傾斜（例如 45.0）
+    min_seg_len=P["min_seg_len"],
+    max_slope_deg=P["max_slope_deg"],
     min_poly_pts=2
 )
 
