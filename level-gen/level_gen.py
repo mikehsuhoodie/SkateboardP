@@ -25,13 +25,34 @@ def auto_params(h, w):
 
         # ── 折線化與平滑 ────────────────────────────────
         "approx_epsilon_frac": 0.007,             # 仍用周長比例，與尺寸無關
-        "chaikin_iters": 2,
+        "chaikin_iters": 1,
 
         # ── 片段過濾（用對角線比例）──────────────────────
-        "min_seg_len": 0.02 * diag,               # 約對角線的 2%（小圖≈10px，大圖自動放大）
-        "max_slope_deg": 60.0,                    # 角度與尺寸無關
+        "min_seg_len": 0.012 * diag,               # 約對角線的 2%（小圖≈10px，大圖自動放大）
+        "max_slope_deg": 80.0,                    # 角度與尺寸無關
     }
     return params
+# def auto_params(h=1080, w=1920):
+#     diag = (h**2 + w**2) ** 0.5  # ≈ 2202.9
+#     params = {
+#         # 前處理
+#         "blur_ksize": 3,           # 原本 diag/400 ≈ 5.5 → odd=7；改小到 3，保留細節
+#         "canny_sigma": 0.55,       # 原 0.33 → 0.50；自動門檻範圍更寬，抓更多邊
+
+#         # 輪廓過濾（小但不為 0，避免極小噪點）
+#         "min_area": int(0.00005 * (h*w)),     # ≈ 104 px^2
+#         "min_peri": int(0.004   * (h+w)),     # ≈ 12 px
+
+#         # 折線化 + 平滑（保留更多節點）
+#         "approx_epsilon_frac": 0.0045,        # 原 0.007 → 0.0045
+#         "chaikin_iters": 2,                   # 原 2 → 1（少平滑一點）
+
+#         # 片段過濾
+#         "min_seg_len": 0.01 * diag,           # 原 0.02 → 0.01（≈ 22 px）
+#         "max_slope_deg": 85.0,                # 原 60 → 85（幾乎不限制斜率）
+#     }
+#     return params
+
 
 
 def chaikin_smooth(points, iterations=2, keep_ends=True):
@@ -114,6 +135,22 @@ def filter_polylines_by_segment_rules(polylines,
     # 轉回 list[list]
     return [sub.tolist() for sub in filtered]
 
+
+TARGET_W, TARGET_H = 1920, 1080
+
+def resize_letterbox(img, tw=TARGET_W, th=TARGET_H):
+    h, w = img.shape[:2]
+    s = min(tw / w, th / h)
+    nw, nh = int(round(w * s)), int(round(h * s))
+    resized = cv2.resize(img, (nw, nh),
+                         interpolation=cv2.INTER_AREA if s < 1 else cv2.INTER_LINEAR)
+    canvas = np.zeros((th, tw,3), dtype=img.dtype)   # 灰階；彩色請改 (th, tw, 3)
+    x0, y0 = (tw - nw) // 2, (th - nh) // 2
+    canvas[y0:y0+nh, x0:x0+nw] = resized
+    return canvas
+
+
+
 # --- 主程式流程 ---
 
 parser = argparse.ArgumentParser(description="Generate level from image")
@@ -133,11 +170,13 @@ unity_assets_path = "/mnt/d/Project/SkateboardP/SkateboardP/Assets/json/"  # 注
 
 
 # 1. 讀取輸入圖像
-img = cv2.imread(input_path)
-if img is None:
+ori_img = cv2.imread(input_path)
+if ori_img is None:
     print(f"讀取圖片失敗: {input_path}")
     sys.exit(1)
 
+# 1-2. Resize
+img = resize_letterbox(ori_img)
 
 # 2. 灰階與去噪/對比
 gray = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
@@ -266,7 +305,7 @@ if paste_to_unity :
     print(f"預覽圖已輸出到 Unity: {output_unity_img_path}")
 
     cv2.imwrite(output_unity_ori_path, img)
-    print(f"預覽圖已輸出到 Unity: {output_unity_ori_path}")
+    print(f"原圖已輸出到 Unity: {output_unity_ori_path}")
 
     # 儲存 JSON
     with open(output_unity_json_path, 'w') as f:
