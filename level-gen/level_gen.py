@@ -118,7 +118,7 @@ if len(sys.argv) < 2:
 
 input_path = sys.argv[1]
 output_img_path = sys.argv[2] if len(sys.argv) > 2 else "output_preview.png"
-output_json_path = sys.argv[3] if len(sys.argv) > 3 else "output_map.json"
+output_json_path = sys.argv[3] if len(sys.argv) > 3 else "polylines.json"
 
 # 1. 讀取輸入圖像
 img = cv2.imread(input_path)
@@ -136,6 +136,10 @@ h, w = gray.shape[:2]
 P = auto_params(h, w)
 
 gray = cv2.GaussianBlur(gray, (P["blur_ksize"], P["blur_ksize"]), 0)
+
+# 新增：保存模糊後的灰階圖片
+cv2.imwrite("blurred_gray.png", gray)  # 輸出目前圖片的樣子（灰階模糊版）
+print("模糊後灰階圖已輸出: blurred_gray.png")  # 提示訊息
 
 # 3. 邊緣（自動 Canny
 edges = auto_canny(gray, sigma=P["canny_sigma"])
@@ -209,13 +213,21 @@ def poly_length(poly):
     poly = np.array(poly, dtype=float)
     return np.sum(np.linalg.norm(poly[1:] - poly[:-1], axis=1)) if len(poly) > 1 else 0.0
 
-longest_idx = int(np.argmax([poly_length(p) for p in polylines]))
-spawn = polylines[longest_idx][0] if len(polylines[longest_idx]) else [0,0]
-goal  = polylines[longest_idx][-1] if len(polylines[longest_idx]) else [0,0]
+# 檢查：處理 polylines 為空的情況
+if not polylines:
+    print("警告：沒有偵測到任何合格的 polylines！請檢查輸入圖片、調整參數（如降低 min_seg_len 或 max_slope_deg），或確認邊緣偵測是否正常。")
+    longest_idx = -1  # 無效索引
+    spawn = [0, 0]    # 預設起點
+    goal = [0, 0]     # 預設終點
+else:
+    lengths = [poly_length(p) for p in polylines]
+    longest_idx = int(np.argmax(lengths))
+    spawn = polylines[longest_idx][0] if len(polylines[longest_idx]) else [0, 0]
+    goal = polylines[longest_idx][-1] if len(polylines[longest_idx]) else [0, 0]
 
 map_data = {
     #"scale": 1.0,
-    "polylines": polylines  # 多條！
+    "polylines": polylines  # 多條！即使空也輸出 []
 }
 with open(output_json_path, 'w') as f:
     json.dump(map_data, f, indent=2, ensure_ascii=False)
