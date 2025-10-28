@@ -17,8 +17,10 @@ def auto_params(h, w):
         "canny_sigma": 0.33,                      # 可依雜訊調 0.25~0.6
 
         # ── 輪廓過濾（已是比例制，保留） ─────────────────
-        "min_area": 0.0003 * (h * w),             # 佔全圖 0.03%
-        "min_peri": 0.01 * perim_ref,             # 佔 (h+w) 的 1%
+        # "min_area": 0.0003 * (h * w),             # 佔全圖 0.03%
+        # "min_peri": 0.01 * perim_ref,             # 佔 (h+w) 的 1%
+        "min_area": 0,             # 佔全圖 0.03%
+        "min_peri": 0,             # 佔 (h+w) 的 1%
 
         # ── 折線化與平滑 ────────────────────────────────
         "approx_epsilon_frac": 0.007,             # 仍用周長比例，與尺寸無關
@@ -118,6 +120,7 @@ if len(sys.argv) < 2:
 
 input_path = sys.argv[1]
 output_img_path = sys.argv[2] if len(sys.argv) > 2 else "output_preview.png"
+output_beforeFilter_path = "output_beforeFilter.png"
 output_json_path = sys.argv[3] if len(sys.argv) > 3 else "polylines.json"
 
 # 1. 讀取輸入圖像
@@ -175,6 +178,7 @@ if len(kept_contours) == 0:
 polylines = []
 
 preview = img.copy()
+preview_beforeFilter = img.copy()
 
 for c in kept_contours:
     is_closed = True
@@ -192,7 +196,14 @@ for c in kept_contours:
     if len(pts) >= 2:
         smoothed = chaikin_smooth(pts, iterations=P["chaikin_iters"], keep_ends=not is_closed)
         polylines.append(smoothed.tolist())
-        
+
+ # 過濾前的樣子
+for poly in polylines:
+    draw_pts = np.round(np.array(poly)).astype(np.int32).reshape((-1,1,2))
+    cv2.polylines(preview_beforeFilter, [draw_pts], isClosed=False, thickness=2, color=(0,0,255))
+
+
+
 polylines = filter_polylines_by_segment_rules(
     polylines,
     min_seg_len=P["min_seg_len"],
@@ -205,6 +216,9 @@ for poly in polylines:
     cv2.polylines(preview, [draw_pts], isClosed=False, thickness=2, color=(0,0,255))
 
 # 7. 儲存預覽
+
+cv2.imwrite(output_beforeFilter_path, preview_beforeFilter)
+print(f"過濾前預覽圖已輸出: {output_beforeFilter_path}")
 cv2.imwrite(output_img_path, preview)
 print(f"預覽圖已輸出: {output_img_path}")
 
