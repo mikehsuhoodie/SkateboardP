@@ -1,7 +1,8 @@
 import cv2
 import numpy as np
-import sys, json
+import sys, json, argparse
 import math
+
 
 def odd_at_least(n, lo=3, hi=21):
     n = int(n) // 2 * 2 + 1  # 轉成奇數
@@ -114,14 +115,22 @@ def filter_polylines_by_segment_rules(polylines,
     return [sub.tolist() for sub in filtered]
 
 # --- 主程式流程 ---
-if len(sys.argv) < 2:
-    print("用法: python level_gen.py <輸入圖片路徑> [預覽輸出圖片] [地圖輸出JSON]")
-    sys.exit(1)
 
-input_path = sys.argv[1]
-output_img_path = sys.argv[2] if len(sys.argv) > 2 else "output_preview.png"
+parser = argparse.ArgumentParser(description="Generate level from image")
+parser.add_argument("input_path", type=str, help="輸入圖片路徑")
+parser.add_argument("-u", "--unity", action="store_true", help="開啟輸出到 Unity ")
+args = parser.parse_args()
+
+input_path = args.input_path
+paste_to_unity = args.unity
+output_img_path = "output_preview.png"
 output_beforeFilter_path = "output_beforeFilter.png"
-output_json_path = sys.argv[3] if len(sys.argv) > 3 else "polylines.json"
+output_json_path = "polylines.json"
+
+# 設輸出路徑為 Unity Assets
+unity_assets_path = "/mnt/d/Project/SkateboardP/SkateboardP/Assets/json/"  # 注意尾端加 / 分隔
+
+
 
 # 1. 讀取輸入圖像
 img = cv2.imread(input_path)
@@ -246,3 +255,20 @@ map_data = {
 with open(output_json_path, 'w') as f:
     json.dump(map_data, f, indent=2, ensure_ascii=False)
 print(f"地圖資訊已輸出: {output_json_path}")
+
+if paste_to_unity :
+    output_unity_img_path = unity_assets_path + "output_preview.png"
+    output_unity_json_path = unity_assets_path + "polylines.json"
+    output_unity_ori_path = unity_assets_path + "original.png"
+
+    # 儲存預覽圖
+    cv2.imwrite(output_unity_img_path, preview)
+    print(f"預覽圖已輸出到 Unity: {output_unity_img_path}")
+
+    cv2.imwrite(output_unity_ori_path, img)
+    print(f"預覽圖已輸出到 Unity: {output_unity_ori_path}")
+
+    # 儲存 JSON
+    with open(output_unity_json_path, 'w') as f:
+        json.dump(map_data, f, indent=2, ensure_ascii=False)
+    print(f"JSON 已輸出到 Unity: {output_unity_json_path}")
