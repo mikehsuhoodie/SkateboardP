@@ -8,6 +8,29 @@ def odd_at_least(n, lo=3, hi=21):
     n = int(n) // 2 * 2 + 1  # 轉成奇數
     return max(lo, min(n, hi))
 
+# def auto_params(h, w):
+#     diag = (h**2 + w**2) ** 0.5         # 影像對角線
+#     perim_ref = (h + w)                 # 尺度參考（你原本就用）
+#     params = {
+#         # ── 前處理 ───────────────────────────────────────
+#         "blur_ksize": odd_at_least(diag / 400),   # 小圖 3、大圖 7~11 左右
+#         "canny_sigma": 0.33,                      # 可依雜訊調 0.25~0.6
+
+#         # ── 輪廓過濾（已是比例制，保留） ─────────────────
+#         # "min_area": 0.0003 * (h * w),             # 佔全圖 0.03%
+#         # "min_peri": 0.01 * perim_ref,             # 佔 (h+w) 的 1%
+#         "min_area": 0,             # 佔全圖 0.03%
+#         "min_peri": 0,             # 佔 (h+w) 的 1%
+#         # ── 折線化與平滑 ────────────────────────────────
+#         "approx_epsilon_frac": 0.007,             # 仍用周長比例，與尺寸無關
+#         "chaikin_iters": 1,
+#         # ── 片段過濾（用對角線比例）──────────────────────
+#         "min_seg_len": 0.02 * diag,               # 約對角線的 2%（小圖≈10px，大圖自動放大）
+#         "max_slope_deg": 60.0,                    # 角度與尺寸無關
+#     }
+#     return params
+
+
 def auto_params(h, w):
     diag = (h**2 + w**2) ** 0.5         # 影像對角線
     perim_ref = (h + w)                 # 尺度參考（你原本就用）
@@ -18,40 +41,18 @@ def auto_params(h, w):
         "canny_sigma": 0.33,                      # 可依雜訊調 0.25~0.6
 
         # ── 輪廓過濾（已是比例制，保留） ─────────────────
-        # "min_area": 0.0003 * (h * w),             # 佔全圖 0.03%
-        # "min_peri": 0.01 * perim_ref,             # 佔 (h+w) 的 1%
-        "min_area": 0,             # 佔全圖 0.03%
-        "min_peri": 0,             # 佔 (h+w) 的 1%
+        "min_area": 0.0003 * (h * w),             # 佔全圖 0.03%
+        "min_peri": 0.01 * perim_ref,             # 佔 (h+w) 的 1%
 
         # ── 折線化與平滑 ────────────────────────────────
         "approx_epsilon_frac": 0.007,             # 仍用周長比例，與尺寸無關
-        "chaikin_iters": 1,
+        "chaikin_iters": 2,
 
         # ── 片段過濾（用對角線比例）──────────────────────
-        "min_seg_len": 0.012 * diag,               # 約對角線的 2%（小圖≈10px，大圖自動放大）
-        "max_slope_deg": 80.0,                    # 角度與尺寸無關
+        "min_seg_len": 0.02 * diag,               # 約對角線的 2%（小圖≈10px，大圖自動放大）
+        "max_slope_deg": 60.0,                    # 角度與尺寸無關
     }
     return params
-# def auto_params(h=1080, w=1920):
-#     diag = (h**2 + w**2) ** 0.5  # ≈ 2202.9
-#     params = {
-#         # 前處理
-#         "blur_ksize": 3,           # 原本 diag/400 ≈ 5.5 → odd=7；改小到 3，保留細節
-#         "canny_sigma": 0.55,       # 原 0.33 → 0.50；自動門檻範圍更寬，抓更多邊
-
-#         # 輪廓過濾（小但不為 0，避免極小噪點）
-#         "min_area": int(0.00005 * (h*w)),     # ≈ 104 px^2
-#         "min_peri": int(0.004   * (h+w)),     # ≈ 12 px
-
-#         # 折線化 + 平滑（保留更多節點）
-#         "approx_epsilon_frac": 0.0045,        # 原 0.007 → 0.0045
-#         "chaikin_iters": 2,                   # 原 2 → 1（少平滑一點）
-
-#         # 片段過濾
-#         "min_seg_len": 0.01 * diag,           # 原 0.02 → 0.01（≈ 22 px）
-#         "max_slope_deg": 85.0,                # 原 60 → 85（幾乎不限制斜率）
-#     }
-#     return params
 
 
 
@@ -135,19 +136,44 @@ def filter_polylines_by_segment_rules(polylines,
     # 轉回 list[list]
     return [sub.tolist() for sub in filtered]
 
-
+# --- 參數 ---
 TARGET_W, TARGET_H = 1920, 1080
+PAD_GRAY = 128  # 灰階背景(可改)
+INTERP = cv2.INTER_AREA  # 放大可改為 cv2.INTER_CUBIC
 
-def resize_letterbox(img, tw=TARGET_W, th=TARGET_H):
-    h, w = img.shape[:2]
-    s = min(tw / w, th / h)
-    nw, nh = int(round(w * s)), int(round(h * s))
-    resized = cv2.resize(img, (nw, nh),
-                         interpolation=cv2.INTER_AREA if s < 1 else cv2.INTER_LINEAR)
-    canvas = np.zeros((th, tw,3), dtype=img.dtype)   # 灰階；彩色請改 (th, tw, 3)
-    x0, y0 = (tw - nw) // 2, (th - nh) // 2
-    canvas[y0:y0+nh, x0:x0+nw] = resized
-    return canvas
+def letterbox_image_and_polys(img, polylines, target_wh=(1920,1080), pad_gray=128, interpolation=cv2.INTER_AREA):
+    """等比縮放圖片到 target，四周補灰；同時把 polylines 映射到新座標系。
+    回傳: (canvas, polys_out, scale, dx, dy, (src_w,src_h), (new_w,new_h))"""
+    th, tw = target_wh[1], target_wh[0]
+    h,  w  = preview.shape[:2]
+
+    # 等比縮放比例
+    r = min(tw / w, th / h)
+    new_w, new_h = int(round(w * r)), int(round(h * r))
+    resized = cv2.resize(img, (new_w, new_h), interpolation=interpolation)
+
+    # 建立灰底畫布（自動支援灰階或彩色）
+    if img.ndim == 2:
+        canvas = np.full((th, tw), pad_gray, dtype=img.dtype)
+    else:
+        canvas = np.full((th, tw, 3), pad_gray, dtype=img.dtype)
+
+    # 貼到中央
+    dx = (tw - new_w) // 2
+    dy = (th - new_h) // 2
+    canvas[dy:dy+new_h, dx:dx+new_w] = resized
+
+    # 映射 polylines
+    def transform_poly(poly):
+        arr = np.asarray(poly, dtype=np.float32).copy()
+        if arr.size == 0:
+            return []
+        arr[:, 0] = arr[:, 0] * r + dx  # x
+        arr[:, 1] = arr[:, 1] * r + dy  # y
+        return arr.tolist()
+
+    polys_out = [transform_poly(p) for p in polylines]
+    return canvas, polys_out, r, dx, dy, (w, h), (new_w, new_h)
 
 
 
@@ -176,8 +202,8 @@ if ori_img is None:
     sys.exit(1)
 
 # 1-2. Resize
-img = resize_letterbox(ori_img)
-
+# img = resize_letterbox(ori_img)
+img = ori_img
 # 2. 灰階與去噪/對比
 gray = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
 # 提升對比，讓邊緣更完整（可視需要開關）
@@ -291,9 +317,36 @@ map_data = {
     #"scale": 1.0,
     "polylines": polylines  # 多條！即使空也輸出 []
 }
-with open(output_json_path, 'w') as f:
-    json.dump(map_data, f, indent=2, ensure_ascii=False)
-print(f"地圖資訊已輸出: {output_json_path}")
+# with open(output_json_path, 'w') as f:
+#     json.dump(map_data, f, indent=2, ensure_ascii=False)
+# print(f"地圖資訊已輸出: {output_json_path}")
+
+# ==== 9. 等比縮放到 1920x1080（灰邊）並同步縮放 polylines ====
+resized_img, polylines_1080p, scale, dx, dy, (src_w, src_h), (new_w, new_h) = \
+    letterbox_image_and_polys(img, polylines, target_wh=(TARGET_W, TARGET_H), pad_gray=PAD_GRAY, interpolation=INTERP)
+
+resized_img_1080p_path = "resized_img.png"
+cv2.imwrite(resized_img_1080p_path, resized_img)
+print(f"1920x1080 原圖已輸出: {resized_img_1080p_path}")
+
+preview_resized_img = resized_img.copy()
+for poly in polylines_1080p:
+    draw_pts = np.round(np.array(poly)).astype(np.int32).reshape((-1,1,2))
+    cv2.polylines(preview_resized_img, [draw_pts], isClosed=False, thickness=5, color=(0,0,255))
+      
+
+preview_img_1080p_path = f"preview_resized_img.png"
+cv2.imwrite(preview_img_1080p_path, preview_resized_img)
+print(f"1920x1080 預覽圖已輸出: {preview_img_1080p_path}")
+
+
+# 10. 產生 1920x1080 座標系的 JSON（含縮放/偏移資訊，便於 Unity 逆運算）
+spawn_1080p = [spawn[0] * scale + dx, spawn[1] * scale + dy] if spawn else [0,0]
+goal_1080p  = [goal[0]  * scale + dx, goal[1]  * scale + dy]  if goal  else [0,0]
+
+map_data_1080p = {
+    "polylines": polylines_1080p               # 已映射到 1920x1080
+}
 
 if paste_to_unity :
     output_unity_img_path = unity_assets_path + "output_preview.png"
@@ -301,13 +354,13 @@ if paste_to_unity :
     output_unity_ori_path = unity_assets_path + "original.png"
 
     # 儲存預覽圖
-    cv2.imwrite(output_unity_img_path, preview)
+    cv2.imwrite(output_unity_img_path, preview_resized_img)
     print(f"預覽圖已輸出到 Unity: {output_unity_img_path}")
 
-    cv2.imwrite(output_unity_ori_path, img)
+    cv2.imwrite(output_unity_ori_path, resized_img)
     print(f"原圖已輸出到 Unity: {output_unity_ori_path}")
 
     # 儲存 JSON
     with open(output_unity_json_path, 'w') as f:
-        json.dump(map_data, f, indent=2, ensure_ascii=False)
+        json.dump(map_data_1080p, f, indent=2, ensure_ascii=False)
     print(f"JSON 已輸出到 Unity: {output_unity_json_path}")
