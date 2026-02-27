@@ -1,0 +1,28 @@
+{
+    "version": "1.0",
+    "timestamp": "2026-02-15T15:00:00Z",
+    "source_image": "street_photo_01.jpg",
+    "aspect_ratio": 1.7778,
+    "points": [
+        [
+            0.12,
+            0.85
+        ],
+        [
+            0.25,
+            0.70
+        ],
+        [
+            0.40,
+            0.65
+        ]
+    ],
+    "occluded_segments": [
+        [
+            10,
+            15
+        ]
+    ],
+    "terrain_type": "asphalt",
+    "friction_coefficient": 0.8
+}
