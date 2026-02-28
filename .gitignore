@@ -1,1 +1,30 @@
 part3_semetic_seg/hf_token.txt
+# =========================
+# Python
+# =========================
+__pycache__/
+*.py[cod]
+*.pyo
+*.pyd
+*.so
+.env
+venv/
+.env/
+
+# segmentation output
+part3_semetic_seg/results/
+
+# =========================
+# Unity
+# =========================
+[Ll]ibrary/
+[Tt]emp/
+[Oo]bj/
+[Bb]uild/
+[Bb]uilds/
+Logs/
+UserSettings/
+
+# OS
+.DS_Store
+Thumbs.db
