@@ -1,5 +1,5 @@
 {
-    "version": "1.0",
+    "version": "1.1",
     "timestamp": "2026-02-15T15:40:00Z",
     "source_image": "stress_test.jpg",
     "aspect_ratio": 1.7778,
@@ -44,5 +44,46 @@
         ]
     ],
     "terrain_type": "concrete",
-    "friction_coefficient": 0.5
+    "friction_coefficient": 0.5,
+    "stage_count": 1,
+    "tracks": [
+        {
+            "stage_index": 1,
+            "semantic_label": "concrete",
+            "points": [
+                [
+                    0.0,
+                    0.2
+                ],
+                [
+                    0.2,
+                    0.2
+                ],
+                [
+                    0.3,
+                    0.8
+                ],
+                [
+                    0.4,
+                    0.2
+                ],
+                [
+                    0.6,
+                    0.2
+                ],
+                [
+                    0.7,
+                    0.0
+                ],
+                [
+                    0.8,
+                    0.5
+                ],
+                [
+                    1.0,
+                    0.5
+                ]
+            ]
+        }
+    ]
 }
