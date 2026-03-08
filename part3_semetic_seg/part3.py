@@ -20,7 +20,7 @@ MODEL_ID = os.getenv("SEGFORMER_MODEL_ID", DEFAULT_MODEL_ID)
 # Input / output
 INPUT_DIR = "images"
 OUTPUT_DIR = "results"
-DEFAULT_IMAGE_NAME = "street.jpg"
+DEFAULT_IMAGE_NAME = "street2d.jpg"
 IMAGE_NAME = os.getenv("INPUT_IMAGE", DEFAULT_IMAGE_NAME)
 
 # Morphology kernel tuning
