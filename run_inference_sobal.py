@@ -1,7 +1,7 @@
-# run_inference.py
+# run_inference_sobal.py
 import os, glob, cv2
 import numpy as np, torch
-from depth_anything_3.api import DepthAnything3
+from depth_adapter import get_depth_model, predict_depth
 
 def normalize_depth(depth: np.ndarray) -> np.ndarray:
     dmin, dmax = float(np.min(depth)), float(np.max(depth))
@@ -27,9 +27,6 @@ def segment_objects_by_depth_edges(depth16: np.ndarray, sobel_percentile):
     _, edges = cv2.threshold(sobel_mag, sobel_thresh, 255, cv2.THRESH_BINARY)
     edges = edges.astype(np.uint8)
     
-    # kernel = np.ones((3,3), np.uint8)
-    # edges = cv2.dilate(edges, kernel, iterations=1)
-    
     objects_mask = cv2.bitwise_not(edges)
     num_labels, labels = cv2.connectedComponents(objects_mask, connectivity=8)
     
@@ -42,47 +39,51 @@ def colorize_labels(labels: np.ndarray, num_labels: int) -> np.ndarray:
     colors[0] = [0, 0, 0]  # edges/background as black
     return colors[labels]
 
-def main():
-    # --- Configuration ---
-    # IMAGE_PATH = "./assets/examples/SOH/000.png"  # Input image or folder
-    IMAGE_PATH = "./assets/examples/SOH/street2d.jpg"
-    OUTDIR     = "./outputs/inference_results"        # Output directory
-    MODEL_NAME = "depth-anything/DA3METRIC-LARGE"      # V3 Model Name
-    INPUT_SIZE = 1008                                  # Input resolution (e.g., 518, 700, 1008)
-    SAVE_16BIT = True                                 # Also save 16-bit raw depth
-    
-    DEVICE = 'cuda' if torch.cuda.is_available() else 'cpu'
-
-    print(f"Loading model {MODEL_NAME} on {DEVICE}...")
-    model = DepthAnything3.from_pretrained(MODEL_NAME).to(DEVICE)
+def run_inference(image_path, out_dir="./outputs/inference_results", model_name="depth-anything/DA3METRIC-LARGE", input_size=1008, save_16bit=True, target_width=1024):
+    device = 'cuda' if torch.cuda.is_available() else 'cpu'
+    print(f"Loading model {model_name} on {device}...")
+    model = get_depth_model(model_name, device)
 
     # Prepare inputs
     img_exts = ('.jpg', '.jpeg', '.png', '.webp', '.bmp', '.tiff', '.tif')
     inputs = []
-    if os.path.isfile(IMAGE_PATH):
-        inputs = [IMAGE_PATH]
+    if os.path.isfile(image_path):
+        inputs = [image_path]
     else:
-        paths = glob.glob(os.path.join(IMAGE_PATH, '**/*'), recursive=True)
+        paths = glob.glob(os.path.join(image_path, '**/*'), recursive=True)
         for p in paths:
             if os.path.splitext(p)[1].lower() in img_exts:
                 inputs.append(p)
 
     if not inputs:
-        print(f"No images found at {IMAGE_PATH}")
+        print(f"No images found at {image_path}")
         return
 
-    os.makedirs(OUTDIR, exist_ok=True)
+    os.makedirs(out_dir, exist_ok=True)
 
     for idx, src in enumerate(inputs):
         print(f'[{idx+1}/{len(inputs)}] Processing {src}')
         
+        # Get original size from source image and resize if needed
+        orig_img = cv2.imread(src)
+        if orig_img is None:
+            print(f"Failed to read {src}")
+            continue
+            
+        orig_h, orig_w = orig_img.shape[:2]
+        if orig_w != target_width:
+            scale = target_width / float(orig_w)
+            new_w = target_width
+            new_h = int(orig_h * scale)
+            orig_img = cv2.resize(orig_img, (new_w, new_h), interpolation=cv2.INTER_AREA)
+            # Overwrite source image so downstream scripts use the standardized resolution
+            cv2.imwrite(src, orig_img)
+            print(f'  ✔ Resized original image to {new_w}x{new_h}')
+            orig_w, orig_h = new_w, new_h
+        
         # Inference
         with torch.no_grad():
-            prediction = model.inference([src], process_res=INPUT_SIZE)
-        
-        # Get original size from source image
-        orig_img = cv2.imread(src)
-        orig_h, orig_w = orig_img.shape[:2]
+            prediction = predict_depth(model, src, input_size=input_size)
         
         depth = prediction.depth
         if isinstance(depth, torch.Tensor):
@@ -91,42 +92,41 @@ def main():
 
         # Resize depth map to original image size
         depth = cv2.resize(depth, (orig_w, orig_h), interpolation=cv2.INTER_LINEAR)
-
-        # # 8-bit outputs
-        # depth8 = normalize_depth(depth)
-        # depth_color = colorize_gray(depth8)
-        
         base = os.path.splitext(os.path.basename(src))[0]
         
-        # # Save colorized
-        # cv2.imwrite(os.path.join(OUTDIR, f'{base}_depth_color.png'), depth_color)
-        # # Save 8-bit gray
-        # cv2.imwrite(os.path.join(OUTDIR, f'{base}_depth_bw.png'), depth8)
-        
-        if SAVE_16BIT:
+        if save_16bit:
             # 16-bit raw depth (normalized by max available in frame)
             dmax = depth.max()
             if dmax > 0:
                 depth16 = (depth / dmax * 65535).astype(np.uint16)
-                cv2.imwrite(os.path.join(OUTDIR, f'{base}_depth_16bit.png'), depth16)
+                cv2.imwrite(os.path.join(out_dir, f'{base}_depth_16bit.png'), depth16)
                 
                 # --- Depth Edge Segmentation (Sobel Only) ---
                 labels, num_labels, edges = segment_objects_by_depth_edges(depth16, sobel_percentile=95)
                 
                 # Save Edge Map
-                cv2.imwrite(os.path.join(OUTDIR, f'{base}_depth_edges.png'), edges)
+                cv2.imwrite(os.path.join(out_dir, f'{base}_depth_edges.png'), edges)
                 
                 # Save Colored Segmentation
                 labels_color = colorize_labels(labels, num_labels)
-                cv2.imwrite(os.path.join(OUTDIR, f'{base}_depth_segments.png'), labels_color)
+                cv2.imwrite(os.path.join(out_dir, f'{base}_depth_segments.png'), labels_color)
                 
                 # --- Export raw mask data for downstream precise cropping ---
-                cv2.imwrite(os.path.join(OUTDIR, f'{base}_depth_mask_raw.png'), labels.astype(np.uint8))
-                np.save(os.path.join(OUTDIR, f'{base}_depth_mask.npy'), labels)
+                cv2.imwrite(os.path.join(out_dir, f'{base}_depth_mask_raw.png'), labels.astype(np.uint8))
+                np.save(os.path.join(out_dir, f'{base}_depth_mask.npy'), labels)
                 
                 print(f'  ✔ Depth Edge Segmentation Saved (Found {num_labels - 1} regions)')
 
-    print(f"--- Done. Results saved to {OUTDIR} ---")
+    print(f"--- Done. Results saved to {out_dir} ---")
+
+def main():
+    IMAGE_PATH = "./assets/pictures/whisky.jpg"
+    OUTDIR     = "./outputs/inference_results"
+    MODEL_NAME = "depth-anything/DA3METRIC-LARGE"
+    INPUT_SIZE = 1008
+    SAVE_16BIT = True
+    TARGET_WIDTH = 1024
+    run_inference(IMAGE_PATH, OUTDIR, MODEL_NAME, INPUT_SIZE, SAVE_16BIT, TARGET_WIDTH)
 
 if __name__ == '__main__':
     main()

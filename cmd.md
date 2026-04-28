@@ -1,1 +1,0 @@
-/home/mike/Projects/SkateP/Depth-Anything-3/.venv/bin/uvicorn infer:app --host 0.0.0.0 --port 9000
