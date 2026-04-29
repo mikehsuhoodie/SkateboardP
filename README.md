@@ -1,5 +1,9 @@
-# SkateP WSL CV Backend
+# SkateboardP
+SkateboardP Project
 
+---
+
+# SkateP WSL CV Backend
 This repository is the WSL CV backend module for the Unity photo-to-level pipeline.
 
 ## Overview
