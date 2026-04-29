@@ -8,17 +8,14 @@ This module takes a 2D image, extracts a depth map, segments it into visual laye
 
 ## Active Runtime Files
 
-The active pipeline is orchestrated by `infer.py` and consists of:
-*   `infer.py`: FastAPI server entrypoint.
-*   `run_inference_sobal.py`: Depth and mask generation.
-*   `cut_img.py`: Layer generation.
-*   `extract_track.py`: Track point extraction.
+The active pipeline is orchestrated by `wsl-cv/scripts/infer.py` and consists of:
+*   `wsl-cv/scripts/infer.py`: FastAPI server entrypoint.
+*   `wsl-cv/scripts/run_inference_sobal.py`: Depth and mask generation.
+*   `wsl-cv/scripts/cut_img.py`: Layer generation.
+*   `wsl-cv/scripts/extract_track.py`: Track point extraction.
 
-*Note: `src/depth_anything_3/` is vendor/model code and must not be modified.*
+*Note: `wsl-cv/models/depth_anything_3/` is vendor/model code and must not be modified.*
 
 ## Documentation
 
-*   [API Contract](docs/api_contract.md): Protocol reference and payload formats.
-*   [Monorepo Integration](docs/monorepo_integration.md): Details on how this module fits into the broader project structure.
-*   [Setup & Execution](docs/setup_wsl.md): Instructions for setting up the environment and running the API.
-*   [Pipeline Flow](docs/pipeline.md): Details on the data flow and file responsibilities.
+*   [WSL CV Documentation](wsl-cv/README.md): Details on the API contract, pipeline flow, environment setup, and repository structure.
