@@ -28,7 +28,7 @@ This repository contains multiple interconnected environments (C# & Python) runn
 ### `unity_client/` (Windows/Mobile - C#)
 **Role:** The Game Client Connection & Generation Scripts.
 - **Tech Stack:** Unity (C#).
-- **Purpose:** Contains **only** the connection and level generation scripts extracted from the main Unity project (e.g., `MobileCameraCapture.cs` and JSON parsing scripts). It is *not* the entire Unity game repository. These scripts handle capturing photos, sending them to `win-server`, parsing the returned Base64/JSON, and instantiating the physical gameplay objects.
+- **Purpose:** Contains **only** the connection and level generation scripts extracted from the main Unity project. It is *not* the entire Unity game repository. `MobileCameraCapture.cs` handles capturing photos, sending them to `win-server`, and decoding the returned Base64/JSON. It then hands off the payload to other generation scripts (like `LevelCoordinator`) to actually instantiate the physical gameplay objects.
 
 ### `_legacy_2d/` (Archive)
 **Role:** Deprecated/Old experiments for 2D track generation. Do not reference unless specifically asked.
