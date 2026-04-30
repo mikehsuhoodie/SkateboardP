@@ -37,23 +37,51 @@ This repository contains multiple interconnected environments (C# & Python) runn
 
 ## 3. Data Transmission Pipeline
 
-When modifying API contracts, note that data traverses three distinct boundaries:
+When modifying API contracts, note that data traverses three distinct boundaries. The active Unity client is
+`unity_client/MobileCameraCapture.cs`; `MobileCameraCapture_old.cs` is kept only as a reference for the older
+single-image flow.
+
+`MobileCameraCapture.cs` supports taking one camera photo or selecting one or more gallery images. For multiple
+gallery images, Unity does **not** send one multipart request containing many files. It processes the selected
+paths one at a time: resize/encode the image, upload it as the `photo` field, poll for that image's result, enqueue
+the returned level payload, then continue with the next image.
 
 ```mermaid
 sequenceDiagram
     participant Mobile as MobileCameraCapture (Unity)
     participant Win as Windows Server (Public API)
     participant WSL as WSL Model Service (FastAPI)
+    participant Level as LevelCoordinator
 
-    Mobile->>Win: HTTP POST (multipart/form-data: `photo`)
-    Win->>WSL: Internal HTTP POST (localhost:9000/infer)
-    
-    Note over WSL: 1. Depth & Edge Segmentation<br/>2. Layer Inpainting<br/>3. Track Extraction
-    
-    WSL-->>Win: Return JSON (Base64 layers + Track points)
-    Win-->>Mobile: Forward JSON Response
-    Note over Mobile: Unity parses JSON -> Builds 3D Level
+    Note over Mobile: User captures one photo or selects one/many gallery images
+    loop For each selected image
+        Mobile->>Mobile: Load image, resize longest side, encode JPEG
+        Mobile->>Win: POST /upload (multipart/form-data: `photo`, X-API-KEY)
+        Win-->>Mobile: {"status":"accepted"}
+        Win->>WSL: Internal POST /infer (multipart/form-data: `photo`)
+
+        Note over WSL: 1. Depth & Edge Segmentation<br/>2. Layer Inpainting<br/>3. Track Extraction
+
+        WSL-->>Win: JSON (Base64 layers + track metadata)
+        Win->>Win: Store latest job state/result
+        loop Until success/error/timeout
+            Mobile->>Win: GET /download (X-API-KEY)
+            Win-->>Mobile: {"status":"processing"} or final JSON
+        end
+        Mobile->>Mobile: Decode Base64 textures + save metadata backup
+        Mobile->>Level: EnqueueLevel(LevelPayload)
+    end
 ```
+
+Important runtime details:
+- Unity still uses the field name `photo` for every upload. Batch selection is a client-side loop, not a backend
+  batch endpoint.
+- `win-server/server.py` keeps a single global job state (`idle`, `processing`, `success`, `error`). The current
+  Unity script avoids overlapping uploads by processing images sequentially.
+- `MobileCameraCapture.cs` calls `LevelCoordinator.EnqueueLevel(payload)` for each successful response. The old
+  reference script called `ApplyPayload(payload)` and handled only one image at a time.
+- Metadata is backed up to `Application.persistentDataPath/schema_XX.json` for each batch item, and also to
+  `schema.json` for compatibility with the older single-result behavior.
 
 ### JSON Payload Contract (WSL -> Win -> Unity)
 The CV backend returns the following structure:

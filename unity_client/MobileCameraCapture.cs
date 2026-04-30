@@ -1,23 +1,23 @@
-using UnityEngine;
-using UnityEngine.Networking;
-using UnityEngine.UI; 
-using TMPro;
 using System.Collections;
+using System.Collections.Generic;
 using System.IO;
 using Newtonsoft.Json;
+using TMPro;
+using UnityEngine;
+using UnityEngine.Networking;
+using UnityEngine.UI;
 
 #if ENABLE_INPUT_SYSTEM
 using UnityEngine.InputSystem;
 #endif
 
 /// <summary>
-/// 注意：此腳本需要安裝 NativeCamera 與 NativeGallery 插件。
-/// GitHub: https://github.com/yasirkula/UnityNativeCamera
-/// GitHub: https://github.com/yasirkula/UnityNativeGallery
+/// Captures or selects photos, sends them to the server, polls the generated result,
+/// and enqueues each returned level into LevelCoordinator.
+/// Supports a batch flow for selecting multiple gallery images at once.
 /// </summary>
 public class MobileCameraCapture : MonoBehaviour
 {
- 
     [System.Serializable]
     public class ServerResponse
     {
@@ -29,7 +29,7 @@ public class MobileCameraCapture : MonoBehaviour
     }
 
     [Header("Network Settings")]
-    [Tooltip("如果未填寫 ipInputField，則預設使用此 IP")]
+    [Tooltip("Used when there is no saved IP in PlayerPrefs.")]
     public string defaultServerIP = "192.168.1.100";
     public string port = "5000";
     private string apiKey = "112550191";
@@ -39,42 +39,60 @@ public class MobileCameraCapture : MonoBehaviour
     public float pollingInterval = 1.0f;
 
     [Header("UI References")]
-    public TMP_InputField ipInputField; 
-    public Button saveIPButton;    
+    public TMP_InputField ipInputField;
+    public Button saveIPButton;
 
     [Header("Image Settings")]
-    public int targetLongSide = 1920; // Ensure 1080p-class resolution
+    public int targetLongSide = 1920;
     [Range(1, 100)]
     public int jpgQuality = 85;
+
+    [Header("Gallery Selection")]
+    [Tooltip("When supported on the current mobile platform, the gallery button opens in multi-select mode.")]
+    public bool preferMultipleGallerySelection = true;
+    [Tooltip("If multi-select is unavailable, fall back to the original single-image picker.")]
+    public bool fallbackToSingleGallerySelection = true;
 
     [Header("Architecture")]
     public LevelCoordinator levelCoordinator;
 
     [Header("UI Panels")]
-    public GameObject uploadPanel;    // 上傳介面 (預設應在 Overlay Canvas)
+    public GameObject uploadPanel;
     public Canvas controlCanva;
-    public Canvas resultCanvas;       // 專門用來顯示結果圖的 UI Canvas
+    public Canvas resultCanvas;
 
-    private bool isProcessing = false;
-    private bool lastUploadSuccessful = false;
+    private bool isProcessing;
+    private bool lastUploadSuccessful;
     private string currentServerIP;
 
-    // 動態取得網址 (加入更強健的判斷)
-    private string GetSanitizedIP() => currentServerIP?.Trim().Replace(" ", "").Replace("\n", "").Replace("\r", "").Replace("http://", "").Replace("https://", "");
-    private string GetSanitizedPort() => port?.Trim().Replace(" ", "").Replace("\n", "").Replace("\r", "");
+    private string GetSanitizedIP()
+    {
+        return currentServerIP?
+            .Trim()
+            .Replace(" ", string.Empty)
+            .Replace("\n", string.Empty)
+            .Replace("\r", string.Empty)
+            .Replace("http://", string.Empty)
+            .Replace("https://", string.Empty);
+    }
+
+    private string GetSanitizedPort()
+    {
+        return port?
+            .Trim()
+            .Replace(" ", string.Empty)
+            .Replace("\n", string.Empty)
+            .Replace("\r", string.Empty);
+    }
 
     private string UploadUrl => $"http://{GetSanitizedIP()}:{GetSanitizedPort()}/upload";
     private string DownloadUrl => $"http://{GetSanitizedIP()}:{GetSanitizedPort()}/download";
 
-    void Start()
+    private void Start()
     {
-        // 從 PlayerPrefs 讀取上次儲存的 IP，如果沒有就用預設值
         currentServerIP = PlayerPrefs.GetString("SavedServerIP", defaultServerIP);
-        
-        // 初次執行也進行一次清理
         currentServerIP = GetSanitizedIP();
 
-        // 2. 如果有設定 InputField，將其文字初始化
         if (ipInputField != null)
         {
             ipInputField.text = currentServerIP;
@@ -83,43 +101,55 @@ public class MobileCameraCapture : MonoBehaviour
 
         if (saveIPButton != null)
         {
-            saveIPButton.onClick.AddListener(() => UpdateIP(ipInputField.text));
+            saveIPButton.onClick.AddListener(() => UpdateIP(ipInputField != null ? ipInputField.text : currentServerIP));
         }
 
-        Debug.Log($"[ServerSettings] 當前伺服器網址: {UploadUrl}");
+        Debug.Log($"[MobileCameraCapture] Active upload endpoint: {UploadUrl}");
     }
 
-    // 更新 IP 的方法 (加入清道夫邏輯)
+    private void Update()
+    {
+#if ENABLE_INPUT_SYSTEM
+        if (Keyboard.current != null && Keyboard.current.cKey.wasPressedThisFrame && !isProcessing)
+        {
+            PickFromCamera();
+        }
+#endif
+    }
+
     public void UpdateIP(string newIP)
     {
-        if (string.IsNullOrEmpty(newIP)) return;
+        if (string.IsNullOrEmpty(newIP))
+        {
+            return;
+        }
 
-        // 清理輸入內容：去空白、去換行、去 http 前綴
-        string sanitized = newIP.Trim().Replace(" ", "").Replace("\n", "").Replace("\r", "");
-        if (sanitized.StartsWith("http://")) sanitized = sanitized.Replace("http://", "");
-        if (sanitized.StartsWith("https://")) sanitized = sanitized.Replace("https://", "");
+        string sanitized = newIP
+            .Trim()
+            .Replace(" ", string.Empty)
+            .Replace("\n", string.Empty)
+            .Replace("\r", string.Empty);
+
+        if (sanitized.StartsWith("http://"))
+        {
+            sanitized = sanitized.Replace("http://", string.Empty);
+        }
+
+        if (sanitized.StartsWith("https://"))
+        {
+            sanitized = sanitized.Replace("https://", string.Empty);
+        }
 
         currentServerIP = sanitized;
-        
-        // 同步回 UI
-        if (ipInputField != null) ipInputField.text = currentServerIP;
+
+        if (ipInputField != null)
+        {
+            ipInputField.text = currentServerIP;
+        }
 
         PlayerPrefs.SetString("SavedServerIP", currentServerIP);
         PlayerPrefs.Save();
-        Debug.Log($"[ServerSettings] IP 已更新並儲存: {currentServerIP} (完整網址: {UploadUrl})");
-    }
-
-    void Update()
-    {
-        #if ENABLE_INPUT_SYSTEM
-        if (Keyboard.current != null)
-        {
-            if (Keyboard.current.cKey.wasPressedThisFrame && !isProcessing)
-            {
-                PickFromCamera(); 
-            }
-        }
-        #endif
+        Debug.Log($"[MobileCameraCapture] Saved server IP: {currentServerIP}");
     }
 
     private void ToggleGameUI()
@@ -129,121 +159,213 @@ public class MobileCameraCapture : MonoBehaviour
         if (controlCanva != null) controlCanva.gameObject.SetActive(true);
     }
 
-    // --- Public 介面 (可連結 UI Button) ---
-
     public void PickFromCamera()
     {
-        if (isProcessing) return;
-
-        // 呼叫原生相機
-        NativeCamera.TakePicture((path) =>
+        if (isProcessing)
         {
-            if (path != null)
+            return;
+        }
+
+        NativeCamera.TakePicture(path =>
+        {
+            if (!string.IsNullOrEmpty(path))
             {
-                StartCoroutine(ProcessAndSendFile(path));
+                StartCoroutine(ProcessSelectedFiles(new[] { path }));
             }
         });
     }
 
     public void PickFromGallery()
     {
-        if (isProcessing) return;
-
-        // 呼叫原生圖庫
-        NativeGallery.GetImageFromGallery((path) =>
+        if (isProcessing)
         {
-            if (path != null)
+            return;
+        }
+
+        if (preferMultipleGallerySelection && NativeGallery.CanSelectMultipleFilesFromGallery())
+        {
+            PickMultipleFromGallery();
+            return;
+        }
+
+        if (preferMultipleGallerySelection && !fallbackToSingleGallerySelection)
+        {
+            Debug.LogWarning("[MobileCameraCapture] Multi-select gallery is unavailable on this platform/device.");
+            return;
+        }
+
+        PickSingleFromGallery();
+    }
+
+    public void PickSingleFromGallery()
+    {
+        if (isProcessing)
+        {
+            return;
+        }
+
+        NativeGallery.GetImageFromGallery(path =>
+        {
+            if (!string.IsNullOrEmpty(path))
             {
-                StartCoroutine(ProcessAndSendFile(path));
+                StartCoroutine(ProcessSelectedFiles(new[] { path }));
             }
         });
     }
 
-    // --- 核心處理邏輯 ---
-
-    private IEnumerator ProcessAndSendFile(string path)
+    public void PickMultipleFromGallery()
     {
+        if (isProcessing)
+        {
+            return;
+        }
+
+        if (!NativeGallery.CanSelectMultipleFilesFromGallery())
+        {
+            if (fallbackToSingleGallerySelection)
+            {
+                PickSingleFromGallery();
+            }
+            else
+            {
+                Debug.LogWarning("[MobileCameraCapture] Multi-select gallery is unavailable on this platform/device.");
+            }
+
+            return;
+        }
+
+        NativeGallery.GetImagesFromGallery(paths =>
+        {
+            if (paths != null && paths.Length > 0)
+            {
+                StartCoroutine(ProcessSelectedFiles(paths));
+            }
+        });
+    }
+
+    private IEnumerator ProcessSelectedFiles(IReadOnlyList<string> paths)
+    {
+        if (paths == null || paths.Count == 0)
+        {
+            yield break;
+        }
+
         isProcessing = true;
 
-        // 1. 從路徑讀取圖片為 Texture2D
-        Texture2D original = NativeCamera.LoadImageAtPath(path, -1, false); // -1 是讀取原始解析度
-        if (original == null)
+        int total = 0;
+        for (int i = 0; i < paths.Count; i++)
         {
-            Debug.LogError("無法讀取圖片: " + path);
+            if (!string.IsNullOrEmpty(paths[i]))
+            {
+                total++;
+            }
+        }
+
+        if (total == 0)
+        {
             isProcessing = false;
             yield break;
         }
 
-        // 2. 執行縮放
-        Texture2D resized = GetResizedTexture(original);
-        
-        // 3. 轉成 JPG 位元組
-        byte[] jpgData = resized.EncodeToJPG(jpgQuality);
-
-        // 釋放記憶體
-        Destroy(original);
-        if (resized != original) Destroy(resized);
-
-        // 4. 發送至電腦
-        yield return StartCoroutine(PostImageToServer(jpgData));
-
-        // 5. 如果上傳成功，則自動開始下載（連同軌道生成）
-        if (lastUploadSuccessful)
+        int current = 0;
+        for (int i = 0; i < paths.Count; i++)
         {
-            yield return StartCoroutine(DownloadImage());
+            string path = paths[i];
+            if (string.IsNullOrEmpty(path))
+            {
+                continue;
+            }
+
+            current++;
+            yield return StartCoroutine(ProcessSingleSelectedFile(path, current, total));
         }
 
         isProcessing = false;
     }
 
-    /// <summary>
-    /// 根據 targetLongSide 計算縮放比例並返回縮放後的貼圖
-    /// </summary>
+    private IEnumerator ProcessSingleSelectedFile(string path, int index, int total)
+    {
+        Debug.Log($"[MobileCameraCapture] Processing image {index}/{total}: {path}");
+
+        Texture2D original = NativeCamera.LoadImageAtPath(path, -1, false);
+        if (original == null)
+        {
+            Debug.LogError($"[MobileCameraCapture] Failed to load image: {path}");
+            yield break;
+        }
+
+        Texture2D resized = GetResizedTexture(original);
+        byte[] jpgData = resized.EncodeToJPG(jpgQuality);
+
+        Destroy(original);
+        if (resized != original)
+        {
+            Destroy(resized);
+        }
+
+        yield return StartCoroutine(PostImageToServer(jpgData, index, total));
+
+        if (lastUploadSuccessful)
+        {
+            yield return StartCoroutine(DownloadImageInternal(index, total));
+        }
+    }
+
     private Texture2D GetResizedTexture(Texture2D source)
     {
-        if (source == null) return null;
+        if (source == null)
+        {
+            return null;
+        }
 
         int sourceWidth = source.width;
         int sourceHeight = source.height;
-        int targetWidth, targetHeight;
 
-        if (sourceWidth >= sourceHeight) // 橫向或正方
+        int targetWidth;
+        int targetHeight;
+
+        if (sourceWidth >= sourceHeight)
         {
             targetWidth = targetLongSide;
             targetHeight = Mathf.RoundToInt((float)sourceHeight / sourceWidth * targetLongSide);
         }
-        else // 縱向
+        else
         {
             targetHeight = targetLongSide;
             targetWidth = Mathf.RoundToInt((float)sourceWidth / sourceHeight * targetLongSide);
         }
 
-        Debug.Log($"[Resize] {sourceWidth}x{sourceHeight} -> {targetWidth}x{targetHeight}");
+        Debug.Log($"[MobileCameraCapture] Resize {sourceWidth}x{sourceHeight} -> {targetWidth}x{targetHeight}");
         return Resize(source, targetWidth, targetHeight);
     }
 
     private Texture2D Resize(Texture2D source, int targetWidth, int targetHeight)
     {
-        RenderTexture rt = RenderTexture.GetTemporary(targetWidth, targetHeight, 0, RenderTextureFormat.Default, RenderTextureReadWrite.Linear);
+        RenderTexture rt = RenderTexture.GetTemporary(
+            targetWidth,
+            targetHeight,
+            0,
+            RenderTextureFormat.Default,
+            RenderTextureReadWrite.Linear);
+
         Graphics.Blit(source, rt);
-        
+
         RenderTexture previous = RenderTexture.active;
         RenderTexture.active = rt;
-        
+
         Texture2D result = new Texture2D(targetWidth, targetHeight, TextureFormat.RGB24, false);
         result.ReadPixels(new Rect(0, 0, targetWidth, targetHeight), 0, 0);
         result.Apply();
-        
+
         RenderTexture.active = previous;
         RenderTexture.ReleaseTemporary(rt);
-        
         return result;
     }
 
-    private IEnumerator PostImageToServer(byte[] data)
+    private IEnumerator PostImageToServer(byte[] data, int index, int total)
     {
         WWWForm form = new WWWForm();
-        form.AddBinaryData("photo", data, "mobile_upload.jpg", "image/jpeg");
+        form.AddBinaryData("photo", data, $"mobile_upload_{index:D2}.jpg", "image/jpeg");
 
         using (UnityWebRequest www = UnityWebRequest.Post(UploadUrl, form))
         {
@@ -252,36 +374,43 @@ public class MobileCameraCapture : MonoBehaviour
 
             if (www.result != UnityWebRequest.Result.Success)
             {
-                Debug.LogError($"傳送到電腦失敗 ({UploadUrl}): " + www.error);
+                Debug.LogError($"[MobileCameraCapture] Upload failed for image {index}/{total}: {www.error}");
                 lastUploadSuccessful = false;
             }
             else
             {
-                Debug.Log("圖片已成功傳送到電腦！");
+                Debug.Log($"[MobileCameraCapture] Upload succeeded for image {index}/{total}.");
                 lastUploadSuccessful = true;
             }
         }
     }
 
-    /// <summary>
-    /// 從伺服器下載圖片並顯示在 RawImage 上
-    /// </summary>
     public void GetImageFromServer()
     {
-        if (isProcessing) return;
-        StartCoroutine(DownloadImage());
+        if (isProcessing)
+        {
+            return;
+        }
+
+        StartCoroutine(DownloadImageRoutine());
     }
 
-    private IEnumerator DownloadImage()
+    private IEnumerator DownloadImageRoutine()
     {
         isProcessing = true;
+        yield return StartCoroutine(DownloadImageInternal(1, 1));
+        isProcessing = false;
+    }
+
+    private IEnumerator DownloadImageInternal(int batchIndex, int batchTotal)
+    {
         int attempts = 0;
         bool isDone = false;
 
         while (attempts < maxPollingAttempts && !isDone)
         {
             attempts++;
-            Debug.Log($"正在下載 JSON 數據 (嘗試 {attempts}/{maxPollingAttempts}): {DownloadUrl}");
+            Debug.Log($"[MobileCameraCapture] Poll {batchIndex}/{batchTotal}, attempt {attempts}/{maxPollingAttempts}: {DownloadUrl}");
 
             using (UnityWebRequest www = UnityWebRequest.Get(DownloadUrl))
             {
@@ -290,58 +419,39 @@ public class MobileCameraCapture : MonoBehaviour
 
                 if (www.result != UnityWebRequest.Result.Success)
                 {
-                    Debug.LogWarning($"下載暫時失敗 ({www.error})，{pollingInterval} 秒後重試...");
+                    Debug.LogWarning($"[MobileCameraCapture] Download failed for image {batchIndex}/{batchTotal}: {www.error}");
                 }
                 else
                 {
+                    ServerResponse response = null;
+
                     try
                     {
-                        string jsonString = www.downloadHandler.text;
-                        ServerResponse response = JsonConvert.DeserializeObject<ServerResponse>(jsonString);
-
-                        if (response != null)
-                        {
-                            // 檢查伺服器狀態
-                            if (response.status == "processing")
-                            {
-                                Debug.Log("伺服器還在處理中，等待重試...");
-                            }
-                            else if (response.status == "success" || response.metadata != null)
-                            {
-                                // 成功拿到資料
-                                if (response.metadata != null)
-                                {
-                                    string trackJson = JsonConvert.SerializeObject(response.metadata);
-                                    string savePath = Path.Combine(Application.persistentDataPath, "schema.json");
-                                    File.WriteAllText(savePath, trackJson);
-                                    Debug.Log($"[Backup] 已將軌道資料儲存至: {savePath}");
-                                }
-
-                                LevelPayload payload = new LevelPayload();
-                                payload.TrackData = response.metadata;
-                                payload.ForegroundTexture = DecodeBase64ToTexture(response.foreground_base64);
-                                payload.GameplayTexture = DecodeBase64ToTexture(response.gameplay_base64);
-                                payload.BackgroundTexture = DecodeBase64ToTexture(response.background_base64);
-
-                                if (levelCoordinator != null)
-                                {
-                                    levelCoordinator.ApplyPayload(payload);
-                                }
-
-                                ToggleGameUI();
-                                isDone = true; // 成功獲取，結束迴圈
-                            }
-                            else
-                            {
-                                Debug.LogError($"伺服器回傳未知狀態: {response.status}");
-                                isDone = true; // 發生未知錯誤，停止重試
-                            }
-                        }
+                        response = JsonConvert.DeserializeObject<ServerResponse>(www.downloadHandler.text);
                     }
                     catch (System.Exception ex)
                     {
-                        Debug.LogError("解析回應時發生錯誤: " + ex.Message);
-                        isDone = true; // 解析失敗通常不需要重試
+                        Debug.LogError($"[MobileCameraCapture] Failed to parse server response: {ex.Message}");
+                        isDone = true;
+                    }
+
+                    if (response != null)
+                    {
+                        if (response.status == "processing")
+                        {
+                            Debug.Log($"[MobileCameraCapture] Server still processing image {batchIndex}/{batchTotal}.");
+                        }
+                        else if (response.status == "success" || response.metadata != null)
+                        {
+                            QueueServerResponse(response, batchIndex);
+                            ToggleGameUI();
+                            isDone = true;
+                        }
+                        else
+                        {
+                            Debug.LogError($"[MobileCameraCapture] Server returned error status: {response.status}");
+                            isDone = true;
+                        }
                     }
                 }
             }
@@ -354,25 +464,65 @@ public class MobileCameraCapture : MonoBehaviour
 
         if (!isDone)
         {
-            Debug.LogError($"已達到最大重試次數 ({maxPollingAttempts})，下載結束。");
+            Debug.LogError($"[MobileCameraCapture] Polling timed out after {maxPollingAttempts} attempts for image {batchIndex}/{batchTotal}.");
+        }
+    }
+
+    private void QueueServerResponse(ServerResponse response, int batchIndex)
+    {
+        if (response == null)
+        {
+            return;
         }
 
-        isProcessing = false;
+        if (response.metadata != null)
+        {
+            string trackJson = JsonConvert.SerializeObject(response.metadata);
+            string savePath = Path.Combine(Application.persistentDataPath, $"schema_{batchIndex:D2}.json");
+            File.WriteAllText(savePath, trackJson);
+            File.WriteAllText(Path.Combine(Application.persistentDataPath, "schema.json"), trackJson);
+            Debug.Log($"[MobileCameraCapture] Saved metadata backup: {savePath}");
+        }
+
+        LevelPayload payload = new LevelPayload
+        {
+            TrackData = response.metadata,
+            ForegroundTexture = DecodeBase64ToTexture(response.foreground_base64),
+            GameplayTexture = DecodeBase64ToTexture(response.gameplay_base64),
+            BackgroundTexture = DecodeBase64ToTexture(response.background_base64)
+        };
+
+        if (levelCoordinator != null)
+        {
+            levelCoordinator.EnqueueLevel(payload);
+        }
+        else
+        {
+            Debug.LogWarning("[MobileCameraCapture] LevelCoordinator is not assigned, payload was not enqueued.");
+        }
     }
 
     private Texture2D DecodeBase64ToTexture(string base64)
     {
-        if (string.IsNullOrEmpty(base64)) return null;
+        if (string.IsNullOrEmpty(base64))
+        {
+            return null;
+        }
+
         try
         {
             byte[] imageBytes = System.Convert.FromBase64String(base64);
             Texture2D tex = new Texture2D(2, 2);
-            if (tex.LoadImage(imageBytes)) return tex;
+            if (tex.LoadImage(imageBytes))
+            {
+                return tex;
+            }
         }
         catch (System.Exception e)
         {
-            Debug.LogError($"Error decoding base64 texture: {e.Message}");
+            Debug.LogError($"[MobileCameraCapture] Error decoding base64 texture: {e.Message}");
         }
+
         return null;
     }
 }
