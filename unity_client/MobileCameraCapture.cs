@@ -13,15 +13,26 @@ using UnityEngine.InputSystem;
 
 /// <summary>
 /// Captures or selects photos, sends them to the server, polls the generated result,
-/// and enqueues each returned level into LevelCoordinator.
+/// and lets the result panel add or start the generated level.
 /// Supports a batch flow for selecting multiple gallery images at once.
 /// </summary>
 public class MobileCameraCapture : MonoBehaviour
 {
     [System.Serializable]
+    public class ResponseImages
+    {
+        public string preview_base64;
+        public string foreground_base64;
+        public string gameplay_base64;
+        public string background_base64;
+    }
+
+    [System.Serializable]
     public class ServerResponse
     {
         public string status;
+        public string message;
+        public ResponseImages images;
         public string foreground_base64;
         public string gameplay_base64;
         public string background_base64;
@@ -60,10 +71,17 @@ public class MobileCameraCapture : MonoBehaviour
     public GameObject uploadPanel;
     public Canvas controlCanva;
     public Canvas resultCanvas;
+    public RawImage resultPreviewImage;
+    public TMP_Text resultStatusText;
+    public Button retryButton;
+    public Button retakeButton;
+    public Button addLevelButton;
+    public Button startGameButton;
 
     private bool isProcessing;
     private bool lastUploadSuccessful;
     private string currentServerIP;
+    private LevelPayload pendingLevelPayload;
 
     private string GetSanitizedIP()
     {
@@ -103,6 +121,28 @@ public class MobileCameraCapture : MonoBehaviour
         {
             saveIPButton.onClick.AddListener(() => UpdateIP(ipInputField != null ? ipInputField.text : currentServerIP));
         }
+
+        if (retryButton != null)
+        {
+            retryButton.onClick.AddListener(ReturnToUploadPanel);
+        }
+
+        if (retakeButton != null)
+        {
+            retakeButton.onClick.AddListener(ReturnToUploadPanel);
+        }
+
+        if (addLevelButton != null)
+        {
+            addLevelButton.onClick.AddListener(AddLevelAndReturnToUpload);
+        }
+
+        if (startGameButton != null)
+        {
+            startGameButton.onClick.AddListener(StartGameFromResult);
+        }
+
+        ShowUploadPanel();
 
         Debug.Log($"[MobileCameraCapture] Active upload endpoint: {UploadUrl}");
     }
@@ -152,11 +192,82 @@ public class MobileCameraCapture : MonoBehaviour
         Debug.Log($"[MobileCameraCapture] Saved server IP: {currentServerIP}");
     }
 
-    private void ToggleGameUI()
+    private void ShowUploadPanel()
+    {
+        if (uploadPanel != null) uploadPanel.SetActive(true);
+        if (resultCanvas != null) resultCanvas.gameObject.SetActive(false);
+        if (controlCanva != null) controlCanva.gameObject.SetActive(false);
+    }
+
+    private void ShowResultPanel(bool success, string statusText)
     {
         if (uploadPanel != null) uploadPanel.SetActive(false);
         if (resultCanvas != null) resultCanvas.gameObject.SetActive(true);
+        if (controlCanva != null) controlCanva.gameObject.SetActive(false);
+
+        if (resultStatusText != null)
+        {
+            resultStatusText.text = statusText;
+        }
+
+        if (!success && resultPreviewImage != null)
+        {
+            resultPreviewImage.texture = null;
+        }
+
+        if (addLevelButton != null)
+        {
+            addLevelButton.interactable = success && pendingLevelPayload != null;
+        }
+
+        if (startGameButton != null)
+        {
+            startGameButton.interactable = success && pendingLevelPayload != null;
+        }
+    }
+
+    private void ShowControlPanel()
+    {
+        if (uploadPanel != null) uploadPanel.SetActive(false);
+        if (resultCanvas != null) resultCanvas.gameObject.SetActive(false);
         if (controlCanva != null) controlCanva.gameObject.SetActive(true);
+    }
+
+    public void ReturnToUploadPanel()
+    {
+        pendingLevelPayload = null;
+        ShowUploadPanel();
+    }
+
+    public void AddLevelAndReturnToUpload()
+    {
+        EnqueuePendingLevel();
+        pendingLevelPayload = null;
+        ShowUploadPanel();
+    }
+
+    public void StartGameFromResult()
+    {
+        EnqueuePendingLevel();
+        pendingLevelPayload = null;
+        ShowControlPanel();
+    }
+
+    private void EnqueuePendingLevel()
+    {
+        if (pendingLevelPayload == null)
+        {
+            return;
+        }
+
+        if (levelCoordinator != null)
+        {
+            levelCoordinator.EnqueueLevel(pendingLevelPayload);
+        }
+        else
+        {
+            Debug.LogWarning("[MobileCameraCapture] LevelCoordinator is not assigned, payload was not enqueued.");
+        }
     }
 
     public void PickFromCamera()
@@ -309,6 +420,11 @@ public class MobileCameraCapture : MonoBehaviour
         {
             yield return StartCoroutine(DownloadImageInternal(index, total));
         }
+        else
+        {
+            pendingLevelPayload = null;
+            ShowResultPanel(false, "Processing failed");
+        }
     }
 
     private Texture2D GetResizedTexture(Texture2D source)
@@ -443,13 +559,15 @@ public class MobileCameraCapture : MonoBehaviour
                         }
                         else if (response.status == "success" || response.metadata != null)
                         {
-                            QueueServerResponse(response, batchIndex);
-                            ToggleGameUI();
+                            PrepareServerResponse(response, batchIndex);
+                            ShowResultPanel(true, "Level generated successfully");
                             isDone = true;
                         }
                         else
                         {
                             Debug.LogError($"[MobileCameraCapture] Server returned error status: {response.status}");
+                            pendingLevelPayload = null;
+                            ShowResultPanel(false, string.IsNullOrEmpty(response.message) ? "Processing failed" : response.message);
                             isDone = true;
                         }
                     }
@@ -465,10 +583,12 @@ public class MobileCameraCapture : MonoBehaviour
         if (!isDone)
         {
             Debug.LogError($"[MobileCameraCapture] Polling timed out after {maxPollingAttempts} attempts for image {batchIndex}/{batchTotal}.");
+            pendingLevelPayload = null;
+            ShowResultPanel(false, "Processing failed");
         }
     }
 
-    private void QueueServerResponse(ServerResponse response, int batchIndex)
+    private void PrepareServerResponse(ServerResponse response, int batchIndex)
     {
         if (response == null)
         {
@@ -484,22 +604,47 @@ public class MobileCameraCapture : MonoBehaviour
             Debug.Log($"[MobileCameraCapture] Saved metadata backup: {savePath}");
         }
 
-        LevelPayload payload = new LevelPayload
+        Texture2D previewTexture = DecodeBase64ToTexture(GetPreviewBase64(response));
+        if (resultPreviewImage != null && previewTexture != null)
+        {
+            resultPreviewImage.texture = previewTexture;
+        }
+
+        pendingLevelPayload = new LevelPayload
         {
             TrackData = response.metadata,
-            ForegroundTexture = DecodeBase64ToTexture(response.foreground_base64),
-            GameplayTexture = DecodeBase64ToTexture(response.gameplay_base64),
-            BackgroundTexture = DecodeBase64ToTexture(response.background_base64)
+            ForegroundTexture = DecodeBase64ToTexture(GetForegroundBase64(response)),
+            GameplayTexture = DecodeBase64ToTexture(GetGameplayBase64(response)),
+            BackgroundTexture = DecodeBase64ToTexture(GetBackgroundBase64(response))
         };
+    }
 
-        if (levelCoordinator != null)
-        {
-            levelCoordinator.EnqueueLevel(payload);
-        }
-        else
-        {
-            Debug.LogWarning("[MobileCameraCapture] LevelCoordinator is not assigned, payload was not enqueued.");
-        }
+    private string GetPreviewBase64(ServerResponse response)
+    {
+        return response.images != null && !string.IsNullOrEmpty(response.images.preview_base64)
+            ? response.images.preview_base64
+            : null;
+    }
+
+    private string GetForegroundBase64(ServerResponse response)
+    {
+        return response.images != null && !string.IsNullOrEmpty(response.images.foreground_base64)
+            ? response.images.foreground_base64
+            : response.foreground_base64;
+    }
+
+    private string GetGameplayBase64(ServerResponse response)
+    {
+        return response.images != null && !string.IsNullOrEmpty(response.images.gameplay_base64)
+            ? response.images.gameplay_base64
+            : response.gameplay_base64;
+    }
+
+    private string GetBackgroundBase64(ServerResponse response)
+    {
+        return response.images != null && !string.IsNullOrEmpty(response.images.background_base64)
+            ? response.images.background_base64
+            : response.background_base64;
     }
 
     private Texture2D DecodeBase64ToTexture(string base64)

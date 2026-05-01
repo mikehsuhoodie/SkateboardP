@@ -20,6 +20,27 @@ job_state = {
     "error_message": None
 }
 
+def normalize_result_schema(result_json):
+    images = result_json.get("images") or {}
+    return {
+        "images": {
+            "preview_base64": images.get("preview_base64", ""),
+            "foreground_base64": images.get(
+                "foreground_base64",
+                result_json.get("foreground_base64", "")
+            ),
+            "gameplay_base64": images.get(
+                "gameplay_base64",
+                result_json.get("gameplay_base64", "")
+            ),
+            "background_base64": images.get(
+                "background_base64",
+                result_json.get("background_base64", "")
+            ),
+        },
+        "metadata": result_json.get("metadata", {})
+    }
+
 def check_auth():
     return request.headers.get("X-API-KEY") == API_KEY
 
@@ -37,12 +58,7 @@ def process_image_background(image_bytes, filename, content_type):
             result_json = response.json()
             with job_lock:
                 job_state["status"] = "success"
-                job_state["result"] = {
-                    "foreground_base64": result_json.get("foreground_base64", ""),
-                    "gameplay_base64": result_json.get("gameplay_base64", ""),
-                    "background_base64": result_json.get("background_base64", ""),
-                    "metadata": result_json.get("metadata", {})
-                }
+                job_state["result"] = normalize_result_schema(result_json)
                 job_state["error_message"] = None
             print("Background worker: Processing completed successfully.")
         else:
@@ -117,12 +133,9 @@ def download():
         return jsonify({"status": "processing"})
         
     elif current_status == "success":
-        # Exactly matches the fields Unity expects
         response_data = {
             "status": "success",
-            "foreground_base64": result.get("foreground_base64", ""),
-            "gameplay_base64": result.get("gameplay_base64", ""),
-            "background_base64": result.get("background_base64", ""),
+            "images": result.get("images", {}),
             "metadata": result.get("metadata", {})
         }
         print("Returning success payload to Unity.")

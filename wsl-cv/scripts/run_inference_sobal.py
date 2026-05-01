@@ -2,35 +2,7 @@
 import os, glob, cv2
 import numpy as np, torch
 from depth_adapter import get_depth_model, predict_depth
-
-def normalize_depth(depth: np.ndarray) -> np.ndarray:
-    dmin, dmax = float(np.min(depth)), float(np.max(depth))
-    if dmax - dmin < 1e-6:
-        return np.zeros_like(depth, dtype=np.uint8)
-    d = (depth - dmin) / (dmax - dmin)
-    return (d * 255.0).astype(np.uint8)
-
-def colorize_gray(img8: np.ndarray) -> np.ndarray:
-    return cv2.applyColorMap(img8, cv2.COLORMAP_TURBO)
-
-def segment_objects_by_depth_edges(depth16: np.ndarray, sobel_percentile):
-    """Segments objects based on depth 1st derivative (Sobel)."""
-    depth_f = depth16.astype(np.float32)
-    depth_f_blurred = cv2.GaussianBlur(depth_f, (3, 3), 0)
-    
-    # 1. 一次微分 (Sobel) 
-    grad_x = cv2.Sobel(depth_f_blurred, cv2.CV_32F, 1, 0, ksize=3)
-    grad_y = cv2.Sobel(depth_f_blurred, cv2.CV_32F, 0, 1, ksize=3)
-    sobel_mag = cv2.magnitude(grad_x, grad_y)
-    
-    sobel_thresh = np.percentile(sobel_mag, sobel_percentile)
-    _, edges = cv2.threshold(sobel_mag, sobel_thresh, 255, cv2.THRESH_BINARY)
-    edges = edges.astype(np.uint8)
-    
-    objects_mask = cv2.bitwise_not(edges)
-    num_labels, labels = cv2.connectedComponents(objects_mask, connectivity=8)
-    
-    return labels, num_labels, edges
+from sam2_segmentation import generate_sam2_label_map
 
 def colorize_labels(labels: np.ndarray, num_labels: int) -> np.ndarray:
     """Assigns random colors to each label id for visualization."""
@@ -101,21 +73,18 @@ def run_inference(image_path, out_dir="./outputs/inference_results", model_name=
                 depth16 = (depth / dmax * 65535).astype(np.uint16)
                 cv2.imwrite(os.path.join(out_dir, f'{base}_depth_16bit.png'), depth16)
                 
-                # --- Depth Edge Segmentation (Sobel Only) ---
-                labels, num_labels, edges = segment_objects_by_depth_edges(depth16, sobel_percentile=95)
-                
-                # Save Edge Map
-                cv2.imwrite(os.path.join(out_dir, f'{base}_depth_edges.png'), edges)
+                # --- SAM2 Automatic Masks ---
+                labels, num_regions = generate_sam2_label_map(orig_img, depth16)
                 
                 # Save Colored Segmentation
-                labels_color = colorize_labels(labels, num_labels)
+                labels_color = colorize_labels(labels, num_regions + 1)
                 cv2.imwrite(os.path.join(out_dir, f'{base}_depth_segments.png'), labels_color)
                 
                 # --- Export raw mask data for downstream precise cropping ---
                 cv2.imwrite(os.path.join(out_dir, f'{base}_depth_mask_raw.png'), labels.astype(np.uint8))
                 np.save(os.path.join(out_dir, f'{base}_depth_mask.npy'), labels)
                 
-                print(f'  ✔ Depth Edge Segmentation Saved (Found {num_labels - 1} regions)')
+                print(f'  ✔ SAM2 Segmentation Saved (Found {num_regions} regions)')
 
     print(f"--- Done. Results saved to {out_dir} ---")
 

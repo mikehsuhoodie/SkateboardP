@@ -19,7 +19,8 @@ def run_pipeline(image_path: str, out_dir: str = "./outputs/inference_results", 
     print(f"=============================================")
     run_inference(image_path, out_dir=out_dir)
     
-    # run_inference_sobal saves to {base_name}_depth_16bit.png and {base_name}_depth_mask.npy
+    # run_inference_sobal saves DA3 depth and the SAM2 label map:
+    # {base_name}_depth_16bit.png and {base_name}_depth_mask.npy
     depth16_path = os.path.join(out_dir, f"{base_name}_depth_16bit.png")
     mask_path = os.path.join(out_dir, f"{base_name}_depth_mask.npy")
     

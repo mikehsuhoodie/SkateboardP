@@ -20,11 +20,13 @@ import subprocess
 import sys
 import uuid
 from datetime import datetime, timezone
+from io import BytesIO
 from pathlib import Path
 from typing import Any
 
 from fastapi import FastAPI, File, HTTPException, UploadFile
 from fastapi.responses import JSONResponse
+from PIL import Image, ImageDraw
 
 # ======================================================================
 # PIPELINE CONFIGURATION
@@ -45,6 +47,7 @@ class PipelineConfig:
 
     # -- Pipeline script paths (relative to SCRIPTS_ROOT) --
     STEP1_SCRIPT: str = "run_inference_sobal.py"
+    STEP1_HELPER_SCRIPT: str = "sam2_segmentation.py"
     STEP2_SCRIPT: str = "cut_img.py"
     STEP3_SCRIPT: str = "extract_track.py"
 
@@ -220,6 +223,65 @@ def encode_image_base64(path: Path) -> str:
     return base64.b64encode(data).decode("ascii")
 
 
+def encode_preview_base64(
+    *,
+    background_path: Path,
+    gameplay_path: Path,
+    foreground_path: Path,
+    metadata: dict[str, Any],
+    max_long_side: int = 768,
+) -> str:
+    """Compose a small UI preview from the existing layer PNG outputs."""
+    try:
+        background = Image.open(background_path).convert("RGBA")
+        gameplay = Image.open(gameplay_path).convert("RGBA")
+        foreground = Image.open(foreground_path).convert("RGBA")
+
+        size = background.size
+        if gameplay.size != size:
+            gameplay = gameplay.resize(size, Image.Resampling.LANCZOS)
+        if foreground.size != size:
+            foreground = foreground.resize(size, Image.Resampling.LANCZOS)
+
+        preview = Image.alpha_composite(background, gameplay)
+        preview = Image.alpha_composite(preview, foreground)
+
+        points = metadata.get("points", [])
+        if len(points) >= 2:
+            draw = ImageDraw.Draw(preview)
+            width, height = preview.size
+            pixel_points = []
+            for point in points:
+                if not isinstance(point, (list, tuple)) or len(point) < 2:
+                    continue
+                x = max(0.0, min(1.0, float(point[0])))
+                y = max(0.0, min(1.0, float(point[1])))
+                pixel_points.append((int(x * (width - 1)), int(y * (height - 1))))
+
+            if len(pixel_points) >= 2:
+                stroke = max(3, width // 160)
+                draw.line(pixel_points, fill=(255, 216, 64, 230), width=stroke)
+                draw.line(pixel_points, fill=(24, 24, 24, 180), width=max(1, stroke // 3))
+
+        long_side = max(preview.size)
+        if long_side > max_long_side:
+            scale = max_long_side / long_side
+            preview = preview.resize(
+                (
+                    max(1, int(preview.width * scale)),
+                    max(1, int(preview.height * scale)),
+                ),
+                Image.Resampling.LANCZOS,
+            )
+
+        buffer = BytesIO()
+        preview.convert("RGB").save(buffer, format="PNG", optimize=True)
+        return base64.b64encode(buffer.getvalue()).decode("ascii")
+    except Exception:
+        logger.warning("Failed to compose preview image.", exc_info=True)
+        return ""
+
+
 def load_json(path: Path) -> dict[str, Any]:
     """Read and parse a JSON file; raise HTTP 500 on failure."""
     if not path.exists():
@@ -284,7 +346,7 @@ def _prepare_job_environment(job_dir: Path, input_path: Path) -> None:
         <job>/Send2Unity/                     (empty, will be written)
         <job>/models  -> WORKSPACE_ROOT/models        (symlink to model code)
         <job>/depth_anything_3 -> ...         (symlink if exists)
-        <job>/<script>.py -> ...              (symlink for each step)
+        <job>/<script>.py -> ...              (symlink for each step/helper)
 
     This way every script's hard-coded relative paths just work.
     """
@@ -313,7 +375,13 @@ def _prepare_job_environment(job_dir: Path, input_path: Path) -> None:
             link.symlink_to(pkg.resolve())
 
     # -- Symlink each pipeline script --
-    for script in (CFG.STEP1_SCRIPT, CFG.STEP2_SCRIPT, CFG.STEP3_SCRIPT, "depth_adapter.py"):
+    for script in (
+        CFG.STEP1_SCRIPT,
+        CFG.STEP1_HELPER_SCRIPT,
+        CFG.STEP2_SCRIPT,
+        CFG.STEP3_SCRIPT,
+        "depth_adapter.py",
+    ):
         src = CFG.SCRIPTS_ROOT / script
         dst = job_dir / script
         if src.exists() and not dst.exists():
@@ -326,26 +394,22 @@ def _prepare_job_environment(job_dir: Path, input_path: Path) -> None:
 
 
 def _write_step1_wrapper(job_dir: Path, base_name: str) -> None:
-    """Wrapper that reads run_inference_sobal.py, patches the hard-coded
-    IMAGE_PATH, and exec's it so depth inference targets the uploaded image."""
-    script_name = CFG.STEP1_SCRIPT  # "run_inference_sobal.py"
+    """Wrapper that runs depth inference against the uploaded job image."""
     wrapper = job_dir / "_run_step1.py"
     content = (
         "import sys, os\n"
         "sys.path.insert(0, os.path.dirname(__file__))\n"
         "\n"
-        f'src_path = os.path.join(os.path.dirname(__file__), "{script_name}")\n'
-        "with open(src_path) as f:\n"
-        "    source = f.read()\n"
+        "from run_inference_sobal import run_inference\n"
         "\n"
-        "# Patch the hard-coded IMAGE_PATH to point at our uploaded image\n"
-        "source = source.replace(\n"
-        '    \'IMAGE_PATH = "./assets/examples/SOH/street2d.jpg"\',\n'
-        f'    \'IMAGE_PATH = "./assets/examples/SOH/{base_name}.jpg"\',\n'
-        ")\n"
+        f'IMAGE_PATH = "./assets/examples/SOH/{base_name}.jpg"\n'
+        'OUTDIR = "./outputs/inference_results"\n'
+        'MODEL_NAME = "depth-anything/DA3METRIC-LARGE"\n'
+        "INPUT_SIZE = 1008\n"
+        "SAVE_16BIT = True\n"
+        "TARGET_WIDTH = 1024\n"
         "\n"
-        'ns = {"__name__": "__main__", "__file__": src_path}\n'
-        "exec(compile(source, src_path, 'exec'), ns)\n"
+        "run_inference(IMAGE_PATH, OUTDIR, MODEL_NAME, INPUT_SIZE, SAVE_16BIT, TARGET_WIDTH)\n"
     )
     wrapper.write_text(content, encoding="utf-8")
 
@@ -409,10 +473,11 @@ async def infer(photo: UploadFile = File(...)):
     Returns
     -------
     JSON with keys:
-        foreground_base64  - base64 PNG of the nearest layer
-        gameplay_base64    - base64 PNG of the middle layer
-        background_base64  - base64 PNG of the farthest (inpainted) layer
-        metadata           - parsed track_points.json dict
+        images.preview_base64     - composed base64 PNG for UI preview
+        images.foreground_base64  - base64 PNG of the nearest layer
+        images.gameplay_base64    - base64 PNG of the middle layer
+        images.background_base64  - base64 PNG of the farthest layer
+        metadata                  - parsed track_points.json dict
     """
     job_dir: Path | None = None
 
@@ -431,7 +496,7 @@ async def infer(photo: UploadFile = File(...)):
         # 4. Prepare the job environment (symlinks + wrapper scripts)
         _prepare_job_environment(job_dir, input_path)
 
-        # 5. Run pipeline -- Step 1: Depth inference + Sobel segmentation
+        # 5. Run pipeline -- Step 1: Depth inference + SAM2 segmentation
         run_command(
             [CFG.PYTHON, "_run_step1.py"],
             cwd=job_dir,
@@ -459,11 +524,20 @@ async def infer(photo: UploadFile = File(...)):
         outputs = find_required_outputs(job_dir)
 
         # 9. Build response
+        metadata = load_json(outputs["metadata"])
         response_data = {
-            "foreground_base64": encode_image_base64(outputs["foreground"]),
-            "gameplay_base64": encode_image_base64(outputs["gameplay"]),
-            "background_base64": encode_image_base64(outputs["background"]),
-            "metadata": load_json(outputs["metadata"]),
+            "images": {
+                "preview_base64": encode_preview_base64(
+                    background_path=outputs["background"],
+                    gameplay_path=outputs["gameplay"],
+                    foreground_path=outputs["foreground"],
+                    metadata=metadata,
+                ),
+                "foreground_base64": encode_image_base64(outputs["foreground"]),
+                "gameplay_base64": encode_image_base64(outputs["gameplay"]),
+                "background_base64": encode_image_base64(outputs["background"]),
+            },
+            "metadata": metadata,
         }
 
         logger.info("Pipeline completed successfully for job %s", job_dir.name)

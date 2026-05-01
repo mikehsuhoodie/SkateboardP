@@ -11,6 +11,7 @@ xformers
 open3d
 fastapi
 uvicorn
+python-multipart
 requests
 typer
 pillow
@@ -22,3 +23,4 @@ plyfile
 pillow_heif
 safetensors
 pycolmap
+git+https://github.com/facebookresearch/sam2.git
