@@ -71,9 +71,9 @@ public class MobileCameraCapture : MonoBehaviour
     public GameObject uploadPanel;
     public Canvas controlCanva;
     public Canvas resultCanvas;
+    public GameObject resultPanel;
     public RawImage resultPreviewImage;
     public TMP_Text resultStatusText;
-    public Button retryButton;
     public Button retakeButton;
     public Button addLevelButton;
     public Button startGameButton;
@@ -82,6 +82,7 @@ public class MobileCameraCapture : MonoBehaviour
     private bool lastUploadSuccessful;
     private string currentServerIP;
     private LevelPayload pendingLevelPayload;
+    private readonly Queue<LevelPayload> stagedLevelPayloads = new Queue<LevelPayload>();
 
     private string GetSanitizedIP()
     {
@@ -120,11 +121,6 @@ public class MobileCameraCapture : MonoBehaviour
         if (saveIPButton != null)
         {
             saveIPButton.onClick.AddListener(() => UpdateIP(ipInputField != null ? ipInputField.text : currentServerIP));
-        }
-
-        if (retryButton != null)
-        {
-            retryButton.onClick.AddListener(ReturnToUploadPanel);
         }
 
         if (retakeButton != null)
@@ -195,14 +191,14 @@ public class MobileCameraCapture : MonoBehaviour
     private void ShowUploadPanel()
     {
         if (uploadPanel != null) uploadPanel.SetActive(true);
-        if (resultCanvas != null) resultCanvas.gameObject.SetActive(false);
+        SetResultPanelActive(false);
         if (controlCanva != null) controlCanva.gameObject.SetActive(false);
     }
 
     private void ShowResultPanel(bool success, string statusText)
     {
         if (uploadPanel != null) uploadPanel.SetActive(false);
-        if (resultCanvas != null) resultCanvas.gameObject.SetActive(true);
+        SetResultPanelActive(true);
         if (controlCanva != null) controlCanva.gameObject.SetActive(false);
 
         if (resultStatusText != null)
@@ -222,15 +218,32 @@ public class MobileCameraCapture : MonoBehaviour
 
         if (startGameButton != null)
         {
-            startGameButton.interactable = success && pendingLevelPayload != null;
+            startGameButton.interactable = success && (pendingLevelPayload != null || stagedLevelPayloads.Count > 0);
         }
     }
 
     private void ShowControlPanel()
     {
         if (uploadPanel != null) uploadPanel.SetActive(false);
-        if (resultCanvas != null) resultCanvas.gameObject.SetActive(false);
+        SetResultPanelActive(false);
         if (controlCanva != null) controlCanva.gameObject.SetActive(true);
+    }
+
+    private void SetResultPanelActive(bool active)
+    {
+        if (resultPanel != null)
+        {
+            if (active && resultCanvas != null)
+            {
+                resultCanvas.gameObject.SetActive(true);
+            }
+
+            resultPanel.SetActive(active);
+        }
+        else if (resultCanvas != null)
+        {
+            resultCanvas.gameObject.SetActive(active);
+        }
     }
 
     public void ReturnToUploadPanel()
@@ -241,33 +254,74 @@ public class MobileCameraCapture : MonoBehaviour
 
     public void AddLevelAndReturnToUpload()
     {
-        EnqueuePendingLevel();
+        AddPendingLevelToFlow();
         pendingLevelPayload = null;
         ShowUploadPanel();
     }
 
     public void StartGameFromResult()
     {
-        EnqueuePendingLevel();
+        AddPendingLevelToStagedLevels();
         pendingLevelPayload = null;
-        ShowControlPanel();
+        if (FlushStagedLevelsToCoordinator())
+        {
+            ShowControlPanel();
+        }
+        else
+        {
+            ShowUploadPanel();
+        }
     }
 
-    private void EnqueuePendingLevel()
+    private void AddPendingLevelToFlow()
     {
         if (pendingLevelPayload == null)
         {
             return;
         }
 
-        if (levelCoordinator != null)
+        if (levelCoordinator != null && levelCoordinator.HasLoadedInitialLevel)
         {
             levelCoordinator.EnqueueLevel(pendingLevelPayload);
+            Debug.Log($"[MobileCameraCapture] Added payload to active game queue. Pending in coordinator = {levelCoordinator.PendingLevelCount}");
+            return;
         }
-        else
+
+        AddPendingLevelToStagedLevels();
+    }
+
+    private void AddPendingLevelToStagedLevels()
+    {
+        if (pendingLevelPayload == null)
         {
-            Debug.LogWarning("[MobileCameraCapture] LevelCoordinator is not assigned, payload was not enqueued.");
+            return;
         }
+
+        stagedLevelPayloads.Enqueue(pendingLevelPayload);
+        Debug.Log($"[MobileCameraCapture] Staged generated level. Staged count = {stagedLevelPayloads.Count}");
+    }
+
+    private bool FlushStagedLevelsToCoordinator()
+    {
+        if (levelCoordinator == null)
+        {
+            Debug.LogWarning("[MobileCameraCapture] LevelCoordinator is not assigned, staged payloads were not enqueued.");
+            return false;
+        }
+
+        if (stagedLevelPayloads.Count == 0)
+        {
+            Debug.LogWarning("[MobileCameraCapture] Start Game ignored because there are no staged payloads.");
+            return false;
+        }
+
+        while (stagedLevelPayloads.Count > 0)
+        {
+            levelCoordinator.EnqueueLevel(stagedLevelPayloads.Dequeue());
+        }
+
+        Debug.Log($"[MobileCameraCapture] Started game flow. Coordinator pending count = {levelCoordinator.PendingLevelCount}");
+        return true;
     }
 
     public void PickFromCamera()
