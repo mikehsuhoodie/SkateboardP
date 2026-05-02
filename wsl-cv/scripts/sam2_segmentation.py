@@ -1,9 +1,13 @@
 import os
+from threading import Lock
 from typing import Any
 
 import cv2
 import numpy as np
 import torch
+
+_SAM2_GENERATOR_CACHE = {}
+_SAM2_GENERATOR_LOCK = Lock()
 
 
 def _get_float_env(name: str, default: float) -> float:
@@ -32,6 +36,44 @@ def _mask_score(mask_record: dict[str, Any]) -> float:
     return predicted_iou * 0.65 + stability * 0.35
 
 
+def _get_sam2_generator(model_id: str, device: str):
+    from sam2.build_sam import build_sam2_hf
+    from sam2.automatic_mask_generator import SAM2AutomaticMaskGenerator
+
+    cache_key = (
+        model_id,
+        device,
+        # _get_int_env("SAM2_POINTS_PER_SIDE", 32),
+        _get_int_env("SAM2_POINTS_PER_SIDE", 16),
+        _get_int_env("SAM2_POINTS_PER_BATCH", 64),
+        _get_float_env("SAM2_PRED_IOU_THRESH", 0.82),
+        _get_float_env("SAM2_STABILITY_SCORE_THRESH", 0.90),
+        _get_float_env("SAM2_BOX_NMS_THRESH", 0.70),
+        # _get_int_env("SAM2_CROP_N_LAYERS", 1),
+        _get_int_env("SAM2_CROP_N_LAYERS", 0),
+        _get_float_env("SAM2_CROP_NMS_THRESH", 0.70),
+        _get_int_env("SAM2_MIN_MASK_REGION_AREA", 128),
+    )
+
+    with _SAM2_GENERATOR_LOCK:
+        if cache_key not in _SAM2_GENERATOR_CACHE:
+            sam2_model = build_sam2_hf(model_id, device=device)
+            sam2_model.eval()
+            _SAM2_GENERATOR_CACHE[cache_key] = SAM2AutomaticMaskGenerator(
+                sam2_model,
+                points_per_side=cache_key[2],
+                points_per_batch=cache_key[3],
+                pred_iou_thresh=cache_key[4],
+                stability_score_thresh=cache_key[5],
+                box_nms_thresh=cache_key[6],
+                crop_n_layers=cache_key[7],
+                crop_nms_thresh=cache_key[8],
+                min_mask_region_area=cache_key[9],
+                output_mode="binary_mask",
+            )
+        return _SAM2_GENERATOR_CACHE[cache_key]
+
+
 def generate_sam2_label_map(
     image_bgr: np.ndarray,
     depth16: np.ndarray,
@@ -43,8 +85,7 @@ def generate_sam2_label_map(
     SAM2 regions. Downstream layer export sorts these regions by DA3 depth.
     """
     try:
-        from sam2.build_sam import build_sam2_hf
-        from sam2.automatic_mask_generator import SAM2AutomaticMaskGenerator
+        import sam2  # noqa: F401
     except ImportError as exc:
         raise RuntimeError(
             "SAM2 is not installed. Install the wsl-cv dependencies again, "
@@ -58,20 +99,7 @@ def generate_sam2_label_map(
     image_rgb = cv2.cvtColor(image_bgr, cv2.COLOR_BGR2RGB)
     model_id = model_id or os.getenv("SAM2_MODEL_ID", "facebook/sam2.1-hiera-large")
     device = "cuda" if torch.cuda.is_available() else "cpu"
-    sam2_model = build_sam2_hf(model_id, device=device)
-
-    generator = SAM2AutomaticMaskGenerator(
-        sam2_model,
-        points_per_side=_get_int_env("SAM2_POINTS_PER_SIDE", 32),
-        points_per_batch=_get_int_env("SAM2_POINTS_PER_BATCH", 64),
-        pred_iou_thresh=_get_float_env("SAM2_PRED_IOU_THRESH", 0.82),
-        stability_score_thresh=_get_float_env("SAM2_STABILITY_SCORE_THRESH", 0.90),
-        box_nms_thresh=_get_float_env("SAM2_BOX_NMS_THRESH", 0.70),
-        crop_n_layers=_get_int_env("SAM2_CROP_N_LAYERS", 1),
-        crop_nms_thresh=_get_float_env("SAM2_CROP_NMS_THRESH", 0.70),
-        min_mask_region_area=_get_int_env("SAM2_MIN_MASK_REGION_AREA", 128),
-        output_mode="binary_mask",
-    )
+    generator = _get_sam2_generator(model_id, device)
 
     autocast_enabled = device == "cuda"
     autocast_context = torch.autocast(device_type="cuda", dtype=torch.bfloat16, enabled=autocast_enabled)

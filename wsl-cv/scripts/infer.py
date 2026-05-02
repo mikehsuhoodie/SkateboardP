@@ -22,11 +22,21 @@ import uuid
 from datetime import datetime, timezone
 from io import BytesIO
 from pathlib import Path
+from threading import Lock
 from typing import Any
 
 from fastapi import FastAPI, File, HTTPException, UploadFile
 from fastapi.responses import JSONResponse
 from PIL import Image, ImageDraw
+
+Path("/tmp/skatep-matplotlib").mkdir(parents=True, exist_ok=True)
+os.environ.setdefault("MPLCONFIGDIR", "/tmp/skatep-matplotlib")
+
+_SCRIPTS_ROOT = Path(__file__).resolve().parent
+if str(_SCRIPTS_ROOT) not in sys.path:
+    sys.path.insert(0, str(_SCRIPTS_ROOT))
+
+from run_inference_sobal import run_inference
 
 # ======================================================================
 # PIPELINE CONFIGURATION
@@ -41,7 +51,7 @@ class PipelineConfig:
     WORKSPACE_ROOT: Path = Path(__file__).resolve().parent.parent
 
     # Where the scripts live
-    SCRIPTS_ROOT: Path = Path(__file__).resolve().parent
+    SCRIPTS_ROOT: Path = _SCRIPTS_ROOT
     # Python interpreter used to call sub-scripts (same venv).
     PYTHON: str = sys.executable
 
@@ -55,9 +65,13 @@ class PipelineConfig:
     JOBS_ROOT: Path = WORKSPACE_ROOT / "_jobs"
 
     # -- Timeout per pipeline step (seconds) --
-    STEP1_TIMEOUT: int = 300  # depth inference can be slow on CPU
     STEP2_TIMEOUT: int = 120
     STEP3_TIMEOUT: int = 60
+
+    # -- Step 1 model settings --
+    DEPTH_MODEL_NAME: str = os.getenv("DA3_MODEL_NAME", "depth-anything/DA3METRIC-LARGE")
+    DEPTH_INPUT_SIZE: int = int(os.getenv("DA3_INPUT_SIZE", "1008"))
+    TARGET_WIDTH: int = int(os.getenv("PIPELINE_TARGET_WIDTH", "1024"))
 
     # -- Input filename written inside each job directory --
     # The legacy scripts derive the "base_name" from the file stem,
@@ -98,6 +112,7 @@ logging.basicConfig(
     datefmt="%Y-%m-%d %H:%M:%S",
 )
 logger = logging.getLogger("infer")
+step1_lock = Lock()
 
 # ======================================================================
 # FASTAPI APP
@@ -210,6 +225,39 @@ def run_command(
         )
 
     logger.info("[%s] Completed successfully.", step_label)
+
+
+def run_step1_in_process(job_dir: Path, input_path: Path) -> None:
+    """Run DA3 + SAM2 in this FastAPI process so model caches persist."""
+    out_dir = job_dir / "outputs" / "inference_results"
+    logger.info(
+        "[Step1:DepthInference] Running in-process with persistent models "
+        "(model=%s, input_size=%d, target_width=%d)",
+        CFG.DEPTH_MODEL_NAME,
+        CFG.DEPTH_INPUT_SIZE,
+        CFG.TARGET_WIDTH,
+    )
+
+    started = datetime.now(timezone.utc)
+    try:
+        with step1_lock:
+            run_inference(
+                str(input_path),
+                out_dir=str(out_dir),
+                model_name=CFG.DEPTH_MODEL_NAME,
+                input_size=CFG.DEPTH_INPUT_SIZE,
+                save_16bit=True,
+                target_width=CFG.TARGET_WIDTH,
+            )
+    except Exception as exc:
+        logger.exception("[Step1:DepthInference] Failed")
+        raise HTTPException(
+            status_code=500,
+            detail=f"Pipeline step 'Step1:DepthInference' failed: {exc}",
+        ) from exc
+
+    elapsed = (datetime.now(timezone.utc) - started).total_seconds()
+    logger.info("[Step1:DepthInference] Completed successfully in %.2fs.", elapsed)
 
 
 def encode_image_base64(path: Path) -> str:
@@ -346,7 +394,7 @@ def _prepare_job_environment(job_dir: Path, input_path: Path) -> None:
         <job>/Send2Unity/                     (empty, will be written)
         <job>/models  -> WORKSPACE_ROOT/models        (symlink to model code)
         <job>/depth_anything_3 -> ...         (symlink if exists)
-        <job>/<script>.py -> ...              (symlink for each step/helper)
+        <job>/<script>.py -> ...              (symlink for legacy subprocess steps)
 
     This way every script's hard-coded relative paths just work.
     """
@@ -388,30 +436,8 @@ def _prepare_job_environment(job_dir: Path, input_path: Path) -> None:
             dst.symlink_to(src.resolve())
 
     # -- Create thin wrapper scripts that override the hard-coded base_name --
-    _write_step1_wrapper(job_dir, base_name)
     _write_step2_wrapper(job_dir, base_name)
     _write_step3_wrapper(job_dir, base_name)
-
-
-def _write_step1_wrapper(job_dir: Path, base_name: str) -> None:
-    """Wrapper that runs depth inference against the uploaded job image."""
-    wrapper = job_dir / "_run_step1.py"
-    content = (
-        "import sys, os\n"
-        "sys.path.insert(0, os.path.dirname(__file__))\n"
-        "\n"
-        "from run_inference_sobal import run_inference\n"
-        "\n"
-        f'IMAGE_PATH = "./assets/examples/SOH/{base_name}.jpg"\n'
-        'OUTDIR = "./outputs/inference_results"\n'
-        'MODEL_NAME = "depth-anything/DA3METRIC-LARGE"\n'
-        "INPUT_SIZE = 1008\n"
-        "SAVE_16BIT = True\n"
-        "TARGET_WIDTH = 1024\n"
-        "\n"
-        "run_inference(IMAGE_PATH, OUTDIR, MODEL_NAME, INPUT_SIZE, SAVE_16BIT, TARGET_WIDTH)\n"
-    )
-    wrapper.write_text(content, encoding="utf-8")
 
 
 def _write_step2_wrapper(job_dir: Path, base_name: str) -> None:
@@ -497,12 +523,7 @@ async def infer(photo: UploadFile = File(...)):
         _prepare_job_environment(job_dir, input_path)
 
         # 5. Run pipeline -- Step 1: Depth inference + SAM2 segmentation
-        run_command(
-            [CFG.PYTHON, "_run_step1.py"],
-            cwd=job_dir,
-            timeout=CFG.STEP1_TIMEOUT,
-            step_label="Step1:DepthInference",
-        )
+        run_step1_in_process(job_dir, input_path)
 
         # 6. Run pipeline -- Step 2: Layer cutting
         run_command(

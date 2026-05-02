@@ -66,12 +66,9 @@ public class MobileCameraCapture : MonoBehaviour
 
     [Header("Architecture")]
     public LevelCoordinator levelCoordinator;
+    [SerializeField] private UIFlowController uiFlowController;
 
-    [Header("UI Panels")]
-    public GameObject uploadPanel;
-    public Canvas controlCanva;
-    public Canvas resultCanvas;
-    public GameObject resultPanel;
+    [Header("Result UI")]
     public RawImage resultPreviewImage;
     public TMP_Text resultStatusText;
     public Button retakeButton;
@@ -109,6 +106,8 @@ public class MobileCameraCapture : MonoBehaviour
 
     private void Start()
     {
+        ResolveUIFlowController();
+
         currentServerIP = PlayerPrefs.GetString("SavedServerIP", defaultServerIP);
         currentServerIP = GetSanitizedIP();
 
@@ -190,16 +189,20 @@ public class MobileCameraCapture : MonoBehaviour
 
     private void ShowUploadPanel()
     {
-        if (uploadPanel != null) uploadPanel.SetActive(true);
-        SetResultPanelActive(false);
-        if (controlCanva != null) controlCanva.gameObject.SetActive(false);
+        ResolveUIFlowController();
+        if (uiFlowController != null)
+        {
+            uiFlowController.ShowCapture();
+        }
     }
 
     private void ShowResultPanel(bool success, string statusText)
     {
-        if (uploadPanel != null) uploadPanel.SetActive(false);
-        SetResultPanelActive(true);
-        if (controlCanva != null) controlCanva.gameObject.SetActive(false);
+        ResolveUIFlowController();
+        if (uiFlowController != null)
+        {
+            uiFlowController.ShowResult();
+        }
 
         if (resultStatusText != null)
         {
@@ -224,25 +227,10 @@ public class MobileCameraCapture : MonoBehaviour
 
     private void ShowControlPanel()
     {
-        if (uploadPanel != null) uploadPanel.SetActive(false);
-        SetResultPanelActive(false);
-        if (controlCanva != null) controlCanva.gameObject.SetActive(true);
-    }
-
-    private void SetResultPanelActive(bool active)
-    {
-        if (resultPanel != null)
+        ResolveUIFlowController();
+        if (uiFlowController != null)
         {
-            if (active && resultCanvas != null)
-            {
-                resultCanvas.gameObject.SetActive(true);
-            }
-
-            resultPanel.SetActive(active);
-        }
-        else if (resultCanvas != null)
-        {
-            resultCanvas.gameObject.SetActive(active);
+            uiFlowController.ShowGameplay();
         }
     }
 
@@ -250,6 +238,29 @@ public class MobileCameraCapture : MonoBehaviour
     {
         pendingLevelPayload = null;
         ShowUploadPanel();
+    }
+
+    public void ResetCaptureFlow()
+    {
+        pendingLevelPayload = null;
+        stagedLevelPayloads.Clear();
+        isProcessing = false;
+        lastUploadSuccessful = false;
+        ShowUploadPanel();
+    }
+
+    private void ResolveUIFlowController()
+    {
+        if (uiFlowController != null)
+        {
+            return;
+        }
+
+        uiFlowController = FindFirstObjectByType<UIFlowController>(FindObjectsInactive.Include);
+        if (uiFlowController == null)
+        {
+            uiFlowController = new GameObject("UIFlowController").AddComponent<UIFlowController>();
+        }
     }
 
     public void AddLevelAndReturnToUpload()

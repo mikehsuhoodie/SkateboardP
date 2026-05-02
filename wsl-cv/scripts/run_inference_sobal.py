@@ -13,7 +13,7 @@ def colorize_labels(labels: np.ndarray, num_labels: int) -> np.ndarray:
 
 def run_inference(image_path, out_dir="./outputs/inference_results", model_name="depth-anything/DA3METRIC-LARGE", input_size=1008, save_16bit=True, target_width=1024):
     device = 'cuda' if torch.cuda.is_available() else 'cpu'
-    print(f"Loading model {model_name} on {device}...")
+    print(f"Preparing depth model {model_name} on {device}...")
     model = get_depth_model(model_name, device)
 
     # Prepare inputs
