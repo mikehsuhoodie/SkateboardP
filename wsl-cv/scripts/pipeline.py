@@ -1,6 +1,6 @@
 import os
 import argparse
-from run_inference_sobal import run_inference
+from run_inference_depth_sam2 import run_inference
 from cut_img import process_cut_img
 from extract_track import extract_smooth_track
 
@@ -19,7 +19,7 @@ def run_pipeline(image_path: str, out_dir: str = "./outputs/inference_results", 
     print(f"=============================================")
     run_inference(image_path, out_dir=out_dir)
     
-    # run_inference_sobal saves DA3 depth and the SAM2 label map:
+    # run_inference_depth_sam2 saves DA3 depth and the SAM2 label map:
     # {base_name}_depth_16bit.png and {base_name}_depth_mask.npy
     depth16_path = os.path.join(out_dir, f"{base_name}_depth_16bit.png")
     mask_path = os.path.join(out_dir, f"{base_name}_depth_mask.npy")
@@ -34,17 +34,28 @@ def run_pipeline(image_path: str, out_dir: str = "./outputs/inference_results", 
     process_cut_img(image_path, depth16_path, mask_path, out_dir=send2unity_dir)
     
     # process_cut_img saves layer_00_mask.npy
-    layer_00_mask = os.path.join(send2unity_dir, "layer_00_mask.npy")
+    layer_00_mask_path = os.path.join(send2unity_dir, "layer_00_mask.npy")
     out_json = os.path.join(send2unity_dir, "track_points.json")
     
-    if not os.path.exists(layer_00_mask):
+    if not os.path.exists(layer_00_mask_path):
         print("Error: Step 2 failed to produce layer_00_mask.npy.")
         return
 
     print(f"\n=============================================")
     print(f"--- Step 3: Extracting Track ---")
     print(f"=============================================")
-    extract_smooth_track(layer_00_mask, out_json, rgb_image_path=image_path, source_img_name=os.path.basename(image_path))
+    extract_smooth_track(
+        layer_00_mask_path,
+        out_json,
+        rgb_image_path=image_path,
+        source_img_name=os.path.basename(image_path),
+        smooth_sigma=18.0,
+        epsilon=18.0,
+        alpha=0.75,
+        sample_interval=18.0,
+        clip_smooth_sigma=1.5,
+        clip_top_margin_px=80.0,
+    )
     
     print(f"\nPipeline completed successfully! Unity outputs are in {send2unity_dir}")
 

@@ -8,12 +8,31 @@ import scipy.ndimage
 from scipy.interpolate import CubicSpline
 import datetime
 
-def extract_smooth_track(npy_path, output_json, rgb_image_path=None, smooth_sigma=30.0, epsilon=20.0, alpha=0.5, sample_interval=20.0, source_img_name="image.jpg"):
+def _clip_pixel_point(x, y, width, height, top_margin_px=0.0):
+    x = float(np.clip(x, 0, width - 1))
+    y_min = float(np.clip(top_margin_px, 0, max(height - 1, 0)))
+    y = float(np.clip(y, y_min, height - 1))
+    return x, y
+
+def _clip_norm(value):
+    return round(float(np.clip(value, 0.0, 1.0)), 4)
+
+def _clip_and_smooth_y(y_values, height, sigma, top_margin_px=0.0):
+    y_min = float(np.clip(top_margin_px, 0, max(height - 1, 0)))
+    y_values = np.clip(y_values, y_min, height - 1)
+    if sigma and sigma > 0 and len(y_values) > 2:
+        y_values = scipy.ndimage.gaussian_filter1d(y_values, sigma=sigma, mode="nearest")
+        y_values = np.clip(y_values, y_min, height - 1)
+    return y_values
+
+def extract_smooth_track(npy_path, output_json, rgb_image_path=None, smooth_sigma=30.0, epsilon=20.0, alpha=0.5, sample_interval=20.0, source_img_name="image.jpg", clip_smooth_sigma=1.5, clip_top_margin_px=50.0):
     """
     smooth_sigma: 高斯平滑強度 (值越大，原本鋸齒狀的地形會被撫得越平，小碎石都會消失)
     epsilon: 多邊形簡化誤差容忍度 (值越大，抓出的「轉折關鍵點」越少，線段會變得很長、很剛硬)
     alpha: 0.0 代表完全是一條直線，1.0 代表完全貼合平滑後的邊緣
     sample_interval: 貝茲曲線採樣間距 (數值越大，最後輸出的 JSON 軌道點越少)
+    clip_smooth_sigma: 對已限制在圖片內的輸出曲線做小範圍平滑，降低硬 clipping 的鋸齒感
+    clip_top_margin_px: 上方 clipping 邊界，避免軌道貼到圖片最上緣
     """
     if not os.path.exists(npy_path):
         print(f"Error: {npy_path} not found.")
@@ -63,8 +82,9 @@ def extract_smooth_track(npy_path, output_json, rgb_image_path=None, smooth_sigm
     x_keys = []
     y_keys = []
     for pt in simplified_points:
-        x_keys.append(pt[0][0])
-        y_keys.append(pt[0][1])
+        x, y = _clip_pixel_point(pt[0][0], pt[0][1], w, h, clip_top_margin_px)
+        x_keys.append(x)
+        y_keys.append(y)
         
     # 確保 x_keys 是遞增且不重複的，才能做樣條插值
     x_keys, unique_idx = np.unique(x_keys, return_index=True)
@@ -84,17 +104,20 @@ def extract_smooth_track(npy_path, output_json, rgb_image_path=None, smooth_sigm
         num_samples = max(10, int((x_keys[-1] - x_keys[0]) / sample_interval))
         x_smooth = np.linspace(x_keys[0], x_keys[-1], num_samples)
         y_smooth = cs(x_smooth)
+        y_smooth = _clip_and_smooth_y(y_smooth, h, clip_smooth_sigma, clip_top_margin_px)
         
         for x, y in zip(x_smooth, y_smooth):
+            x, y = _clip_pixel_point(x, y, w, h, clip_top_margin_px)
             # 將座標正規化為 0.0 ~ 1.0，並四捨五入到小數點下四位
-            x_norm = round(float(x) / (w - 1), 4)
-            y_norm = round(float(y) / (h - 1), 4)
+            x_norm = _clip_norm(float(x) / max(w - 1, 1))
+            y_norm = _clip_norm(float(y) / max(h - 1, 1))
             track_points.append([x_norm, y_norm])
     else:
         # 如果點太少(只有兩個點)，就直接用原本的直線
         for x, y in zip(x_keys, y_keys):
-            x_norm = round(float(x) / (w - 1), 4)
-            y_norm = round(float(y) / (h - 1), 4)
+            x, y = _clip_pixel_point(x, y, w, h, clip_top_margin_px)
+            x_norm = _clip_norm(float(x) / max(w - 1, 1))
+            y_norm = _clip_norm(float(y) / max(h - 1, 1))
             track_points.append([x_norm, y_norm])
             
     # 計算軌道經過區域的平均顏色
@@ -107,8 +130,8 @@ def extract_smooth_track(npy_path, output_json, rgb_image_path=None, smooth_sigm
             colors = []
             
             for pt in track_points:
-                px = int(pt[0] * (img_w - 1))
-                py = int(pt[1] * (img_h - 1))
+                px = int(np.clip(pt[0], 0.0, 1.0) * (img_w - 1))
+                py = int(np.clip(pt[1], 0.0, 1.0) * (img_h - 1))
                 
                 # 為了避免拿到太多雜訊，擷取軌道點周圍 5x5 的小區域計算平均色
                 y_start = max(0, py - 2)
@@ -147,14 +170,15 @@ def extract_smooth_track(npy_path, output_json, rgb_image_path=None, smooth_sigm
     # 繪製插值且經過樣條平滑的最終貝茲路徑 (綠線)
     # 此處還原回 pixel 座標來畫圖
     for i in range(len(track_points)-1):
-        pt1_x = int(track_points[i][0] * (w - 1))
-        pt1_y = int(track_points[i][1] * (h - 1))
-        pt2_x = int(track_points[i+1][0] * (w - 1))
-        pt2_y = int(track_points[i+1][1] * (h - 1))
+        pt1_x = int(np.clip(track_points[i][0], 0.0, 1.0) * (w - 1))
+        pt1_y = int(np.clip(track_points[i][1], 0.0, 1.0) * (h - 1))
+        pt2_x = int(np.clip(track_points[i+1][0], 0.0, 1.0) * (w - 1))
+        pt2_y = int(np.clip(track_points[i+1][1], 0.0, 1.0) * (h - 1))
         cv2.line(vis_img, (pt1_x, pt1_y), (pt2_x, pt2_y), (0, 255, 0), 2)
         
     # 畫出做為算圖骨架的關鍵點 (黃點)
     for x, y in zip(x_keys, y_keys):
+        x, y = _clip_pixel_point(x, y, w, h, clip_top_margin_px)
         cv2.circle(vis_img, (int(x), int(y)), 4, (0, 255, 255), -1)
     
     vis_path = npy_path.replace('.npy', '_track_vis.png')

@@ -36,7 +36,7 @@ _SCRIPTS_ROOT = Path(__file__).resolve().parent
 if str(_SCRIPTS_ROOT) not in sys.path:
     sys.path.insert(0, str(_SCRIPTS_ROOT))
 
-from run_inference_sobal import run_inference
+from run_inference_depth_sam2 import run_inference
 
 # ======================================================================
 # PIPELINE CONFIGURATION
@@ -56,7 +56,7 @@ class PipelineConfig:
     PYTHON: str = sys.executable
 
     # -- Pipeline script paths (relative to SCRIPTS_ROOT) --
-    STEP1_SCRIPT: str = "run_inference_sobal.py"
+    STEP1_SCRIPT: str = "run_inference_depth_sam2.py"
     STEP1_HELPER_SCRIPT: str = "sam2_segmentation.py"
     STEP2_SCRIPT: str = "cut_img.py"
     STEP3_SCRIPT: str = "extract_track.py"
@@ -69,9 +69,10 @@ class PipelineConfig:
     STEP3_TIMEOUT: int = 60
 
     # -- Step 1 model settings --
-    DEPTH_MODEL_NAME: str = os.getenv("DA3_MODEL_NAME", "depth-anything/DA3METRIC-LARGE")
-    DEPTH_INPUT_SIZE: int = int(os.getenv("DA3_INPUT_SIZE", "1008"))
-    TARGET_WIDTH: int = int(os.getenv("PIPELINE_TARGET_WIDTH", "1024"))
+    DEPTH_MODEL_NAME: str = os.getenv("DA3_MODEL_NAME", "depth-anything/da3-small")
+    OUTPUT_WIDTH: int = int(os.getenv("PIPELINE_OUTPUT_WIDTH", "1024"))
+    INFERENCE_WIDTH: int = int(os.getenv("PIPELINE_INFERENCE_WIDTH", "768"))
+    DEPTH_INPUT_SIZE: int = int(os.getenv("DA3_INPUT_SIZE", str(INFERENCE_WIDTH)))
 
     # -- Input filename written inside each job directory --
     # The legacy scripts derive the "base_name" from the file stem,
@@ -165,7 +166,7 @@ def run_command(
     Parameters
     ----------
     cmd:
-        Command tokens, e.g. ["python", "run_inference_sobal.py"].
+        Command tokens, e.g. ["python", "run_inference_depth_sam2.py"].
     cwd:
         Working directory for the child process.
     timeout:
@@ -232,10 +233,11 @@ def run_step1_in_process(job_dir: Path, input_path: Path) -> None:
     out_dir = job_dir / "outputs" / "inference_results"
     logger.info(
         "[Step1:DepthInference] Running in-process with persistent models "
-        "(model=%s, input_size=%d, target_width=%d)",
+        "(model=%s, input_size=%d, inference_width=%d, output_width=%d)",
         CFG.DEPTH_MODEL_NAME,
         CFG.DEPTH_INPUT_SIZE,
-        CFG.TARGET_WIDTH,
+        CFG.INFERENCE_WIDTH,
+        CFG.OUTPUT_WIDTH,
     )
 
     started = datetime.now(timezone.utc)
@@ -247,7 +249,8 @@ def run_step1_in_process(job_dir: Path, input_path: Path) -> None:
                 model_name=CFG.DEPTH_MODEL_NAME,
                 input_size=CFG.DEPTH_INPUT_SIZE,
                 save_16bit=True,
-                target_width=CFG.TARGET_WIDTH,
+                target_width=CFG.OUTPUT_WIDTH,
+                inference_width=CFG.INFERENCE_WIDTH,
             )
     except Exception as exc:
         logger.exception("[Step1:DepthInference] Failed")
@@ -452,7 +455,7 @@ def _write_step2_wrapper(job_dir: Path, base_name: str) -> None:
         "    source = f.read()\n"
         "\n"
         "# Override the hard-coded base_name\n"
-        f"source = source.replace(\"base_name = 'street2d'\", \"base_name = '{base_name}'\")\n"
+        f'source = source.replace(\'base_name = "street2d"\', \'base_name = "{base_name}"\')\n'
         "\n"
         'ns = {"__name__": "__main__", "__file__": src_path}\n'
         "exec(compile(source, src_path, 'exec'), ns)\n"
@@ -461,7 +464,7 @@ def _write_step2_wrapper(job_dir: Path, base_name: str) -> None:
 
 
 def _write_step3_wrapper(job_dir: Path, base_name: str) -> None:
-    """Wrapper that calls extract_track with the correct paths."""
+    """Wrapper that calls the smooth track extractor with the correct paths."""
     wrapper = job_dir / "_run_step3.py"
     content = (
         "import os, sys\n"
@@ -474,7 +477,18 @@ def _write_step3_wrapper(job_dir: Path, base_name: str) -> None:
         f"original_img = './assets/examples/SOH/{base_name}.jpg'\n"
         f"img_name = '{base_name}.jpg'\n"
         "\n"
-        "extract_smooth_track(npy_file, out_json, rgb_image_path=original_img, source_img_name=img_name)\n"
+        "extract_smooth_track(\n"
+        "    npy_file,\n"
+        "    out_json,\n"
+        "    rgb_image_path=original_img,\n"
+        "    source_img_name=img_name,\n"
+        "    smooth_sigma=18.0,\n"
+        "    epsilon=18.0,\n"
+        "    alpha=0.75,\n"
+        "    sample_interval=18.0,\n"
+        "    clip_smooth_sigma=1.5,\n"
+        "    clip_top_margin_px=24.0,\n"
+        ")\n"
     )
     wrapper.write_text(content, encoding="utf-8")
 

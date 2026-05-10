@@ -12,7 +12,7 @@ We use `uv` for dependency management.
 uv sync
 ```
 
-`uv sync` installs the SAM2 package from `facebookresearch/sam2`. The first inference may also download the configured SAM2 Hugging Face model, `facebook/sam2.1-hiera-large` by default.
+`uv sync` installs the SAM2 package from `facebookresearch/sam2`. The first inference may also download the configured SAM2 Hugging Face model, `facebook/sam2.1-hiera-small` by default.
 
 ### Running the API Server
 Start the FastAPI backend server:
@@ -29,30 +29,30 @@ Intermediate outputs will be saved to `outputs/` and `Send2Unity/`.
 
 ## 2. Repository Map
 
-*   `scripts/infer.py`: Active runtime API entrypoint (FastAPI server).
+*   `scripts/infer.py`: Active runtime API entrypoint (FastAPI server). It creates one isolated `_jobs/` directory per request and packages the Unity-facing JSON response.
 *   `scripts/pipeline.py`: Standalone pipeline execution script.
-*   `scripts/run_inference_sobal.py`: DA3 depth generation plus SAM2 mask generation.
+*   `scripts/run_inference_depth_sam2.py`: DA3 depth generation plus SAM2 mask generation.
 *   `scripts/sam2_segmentation.py`: SAM2 automatic masks, mask filtering, and non-overlapping label-map export.
-*   `scripts/cut_img.py`: Visual layer generation (foreground, gameplay, background).
-*   `scripts/extract_track.py`: Track point extraction from masks.
+*   `scripts/cut_img.py`: Depth-sorted visual layer generation (foreground, gameplay, background) plus background inpainting.
+*   `scripts/extract_track.py`: Smooth playable track point extraction from the dedicated track/ground-region mask.
 *   `scripts/depth_adapter.py`: Wrapper and integration point for the DA3 model.
 *   `models/depth_anything_3/`: Vendor/model code (Do not modify).
 *   `Legacy/`: Older scripts (e.g., `unity_depth_gen.py`) and experiments.
-*   `samples/output/`: Generated Unity-facing outputs / samples.
+*   `Send2Unity/`: Generated Unity-facing outputs for manual runs.
 *   `outputs/`: Generated intermediate outputs.
 
 ## 3. Pipeline Flow & Responsibilities
 
 ### Execution Flow
 1. Windows Server sends `POST /infer` with an image.
-2. `scripts/infer.py` creates a sandbox environment in `_jobs/` and orchestrates subprocesses.
-3. `scripts/run_inference_sobal.py` generates a 16-bit DA3 depth map and a SAM2 label map.
-4. `scripts/cut_img.py` sorts accepted regions by average depth, exports foreground/gameplay/background layers, and performs occlusion inpainting.
-5. `scripts/extract_track.py` extracts a JSON array of track points.
+2. `scripts/infer.py` creates an isolated job environment in `_jobs/` with the uploaded image, symlinked scripts/models, and wrapper scripts for path-sensitive steps.
+3. Step 1 runs `scripts/run_inference_depth_sam2.py` in process to generate a 16-bit DA3 depth map and a SAM2 label map.
+4. Step 2 runs `scripts/cut_img.py` through a wrapper to sort accepted regions by average depth, export foreground/gameplay/background layers, and perform occlusion inpainting.
+5. Step 3 runs `scripts/extract_track.py` through a wrapper to extract smooth playable track points from `layer_00_mask.npy`, the dedicated track/ground-region mask selected during Step 2.
 6. `scripts/infer.py` packages everything into Base64 JSON and responds.
 
 ### Known Fragile Points
-*   **Subprocess Orchestration**: `scripts/infer.py` uses `subprocess` and dynamic string patching to override hardcoded paths in the legacy scripts. This is sensitive to script changes.
+*   **Job Orchestration**: `scripts/infer.py` uses isolated job directories, symlinks, and wrapper scripts to override hardcoded paths in path-sensitive legacy scripts. This is sensitive to script changes.
 *   **DA3 Vendor Dependency**: `models/depth_anything_3/` must remain untouched. Any API changes there require updates to `scripts/depth_adapter.py`.
 *   **SAM2 Runtime Dependency**: SAM2 is installed from GitHub and loads model weights from Hugging Face by default. Offline machines need the model cached ahead of time or `SAM2_MODEL_ID` pointed at an accessible local/HF model.
 *   **Generated Folders**: Manual runs rely on `outputs/` and `Send2Unity/` folders being created correctly.

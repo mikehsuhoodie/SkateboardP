@@ -44,10 +44,10 @@ def _get_sam2_generator(model_id: str, device: str):
         model_id,
         device,
         # _get_int_env("SAM2_POINTS_PER_SIDE", 32),
-        _get_int_env("SAM2_POINTS_PER_SIDE", 16),
+        _get_int_env("SAM2_POINTS_PER_SIDE",24),
         _get_int_env("SAM2_POINTS_PER_BATCH", 64),
         _get_float_env("SAM2_PRED_IOU_THRESH", 0.82),
-        _get_float_env("SAM2_STABILITY_SCORE_THRESH", 0.90),
+        _get_float_env("SAM2_STABILITY_SCORE_THRESH", 0.9),
         _get_float_env("SAM2_BOX_NMS_THRESH", 0.70),
         # _get_int_env("SAM2_CROP_N_LAYERS", 1),
         _get_int_env("SAM2_CROP_N_LAYERS", 0),
@@ -107,7 +107,7 @@ def generate_sam2_label_map(
         mask_records = generator.generate(image_rgb)
 
     min_area = int(height * width * _get_float_env("SAM2_MIN_AREA_RATIO", 0.001))
-    max_area = int(height * width * _get_float_env("SAM2_MAX_AREA_RATIO", 0.85))
+    max_area = int(height * width * _get_float_env("SAM2_MAX_AREA_RATIO", 0.55))
     min_new_ratio = _get_float_env("SAM2_MIN_NEW_AREA_RATIO", 0.20)
 
     filtered: list[dict[str, Any]] = []
